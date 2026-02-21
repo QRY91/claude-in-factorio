@@ -1,0 +1,8 @@
+{
+    "name": "claude-interface",
+    "version": "0.1.0",
+    "title": "Claude Interface",
+    "author": "qry",
+    "factorio_version": "2.0",
+    "description": "In-game chat interface for Claude AI agent. Talk to Claude directly from within Factorio."
+}
