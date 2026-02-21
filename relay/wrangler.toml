@@ -1,0 +1,20 @@
+name = "bore-relay"
+main = "src/index.ts"
+compatibility_date = "2024-05-12"
+
+# Durable Objects (free plan with SQLite storage)
+[[durable_objects.bindings]]
+name = "BORE_RELAY"
+class_name = "BoreRelay"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BoreRelay"]
+
+# Set your auth token via: wrangler secret put RELAY_TOKEN
+# Or in .dev.vars for local development:
+#   RELAY_TOKEN=your-secret-token
+
+[vars]
+# Optional: configure max buffer size (events kept for late joiners)
+BUFFER_SIZE = "100"

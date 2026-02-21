@@ -9,6 +9,9 @@ Two modes:
   --mode api          Direct Anthropic API with 12 hand-defined tools (default)
   --mode claude-code  Claude Code SDK with all 40+ factorioctl MCP tools
 
+Includes an SSE telemetry server (default port 8088) that streams
+tool calls, chat messages, and errors for live monitoring dashboards.
+
 Usage:
     python bridge.py [--mode api|claude-code] [--rcon-port 27015] ...
 """
@@ -17,12 +20,16 @@ import argparse
 import asyncio
 import json
 import os
+import queue
 import shutil
 import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
+from datetime import datetime, timezone
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 # Load .env file from script directory
@@ -126,6 +133,229 @@ def lua_long_string(text: str) -> str:
         level += 1
     eq = "=" * level
     return f"[{eq}[{text}]{eq}]"
+
+
+# ============================================================
+# SSE Telemetry Server
+# ============================================================
+
+class SSEBroadcaster:
+    """Manages SSE client connections and broadcasts events to the Deep Bore dashboard."""
+
+    def __init__(self):
+        self._clients: list[queue.Queue] = []
+        self._lock = threading.Lock()
+
+    def add_client(self) -> queue.Queue:
+        q: queue.Queue = queue.Queue(maxsize=200)
+        with self._lock:
+            self._clients.append(q)
+        return q
+
+    def remove_client(self, q: queue.Queue):
+        with self._lock:
+            self._clients = [c for c in self._clients if c is not q]
+
+    def broadcast(self, event: dict):
+        """Send an event to all connected SSE clients."""
+        if "timestamp" not in event:
+            event["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        data = json.dumps(event, separators=(",", ":"))
+        with self._lock:
+            dead = []
+            for q in self._clients:
+                try:
+                    q.put_nowait(data)
+                except queue.Full:
+                    dead.append(q)
+            for q in dead:
+                self._clients.remove(q)
+
+    @property
+    def client_count(self) -> int:
+        with self._lock:
+            return len(self._clients)
+
+
+def _make_sse_handler(broadcaster: SSEBroadcaster):
+    class SSEHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/events":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+
+                q = broadcaster.add_client()
+                try:
+                    while True:
+                        try:
+                            data = q.get(timeout=15)
+                            self.wfile.write(f"data: {data}\n\n".encode())
+                            self.wfile.flush()
+                        except queue.Empty:
+                            self.wfile.write(b": keepalive\n\n")
+                            self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                finally:
+                    broadcaster.remove_client(q)
+            elif self.path == "/health":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                resp = json.dumps({"status": "ok", "clients": broadcaster.client_count})
+                self.wfile.write(resp.encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_OPTIONS(self):
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass  # Suppress default request logging
+
+    return SSEHandler
+
+
+def start_sse_server(broadcaster: SSEBroadcaster, port: int = 8088) -> HTTPServer:
+    handler = _make_sse_handler(broadcaster)
+    server = HTTPServer(("0.0.0.0", port), handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+# ============================================================
+# Remote Relay Pusher
+# ============================================================
+
+class RelayPusher:
+    """Pushes events to a remote relay via batched HTTP POST."""
+
+    def __init__(self, relay_url: str, token: str):
+        self.ingest_url = relay_url.rstrip("/") + "/ingest"
+        self.token = token
+        self._queue: queue.Queue = queue.Queue(maxsize=500)
+        self._thread = threading.Thread(target=self._push_loop, daemon=True)
+        self._thread.start()
+
+    def push(self, event: dict):
+        try:
+            self._queue.put_nowait(event)
+        except queue.Full:
+            pass
+
+    def _push_loop(self):
+        import urllib.request as urlreq
+        while True:
+            batch: list[dict] = []
+            try:
+                batch.append(self._queue.get(timeout=2))
+                while len(batch) < 20:
+                    batch.append(self._queue.get_nowait())
+            except queue.Empty:
+                pass
+
+            if not batch:
+                continue
+
+            data = json.dumps(batch).encode()
+            req = urlreq.Request(
+                self.ingest_url,
+                data=data,
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "bore-bridge/1.0",
+                },
+                method="POST",
+            )
+            try:
+                urlreq.urlopen(req, timeout=5)
+            except Exception as e:
+                print(f"[relay] push failed: {e}")
+
+
+# ============================================================
+# Telemetry Bus (local SSE + remote relay)
+# ============================================================
+
+class Telemetry:
+    """Unified event bus — broadcasts to local SSE clients and/or remote relay."""
+
+    def __init__(self, sse: SSEBroadcaster | None = None, relay: RelayPusher | None = None):
+        self.sse = sse
+        self.relay = relay
+
+    def emit(self, event: dict):
+        if "timestamp" not in event:
+            event["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        if self.sse:
+            self.sse.broadcast(dict(event))
+        if self.relay:
+            self.relay.push(dict(event))
+
+
+# Telemetry helpers — all safe to call with telemetry=None
+
+def emit_chat(telemetry: Telemetry | None, role: str, message: str,
+              agent: str = "BORE-01", tick: int | None = None):
+    if telemetry:
+        telemetry.emit({
+            "type": "chat",
+            "data": {"role": role, "message": message},
+            "agent": agent, "tick": tick,
+        })
+
+
+def emit_tool_call(telemetry: Telemetry | None, tool: str, input_data: dict,
+                   agent: str = "BORE-01", tick: int | None = None):
+    if telemetry:
+        telemetry.emit({
+            "type": "tool_call",
+            "data": {"tool": tool, "input": input_data},
+            "agent": agent, "tick": tick,
+        })
+
+
+def emit_tool_result(telemetry: Telemetry | None, tool: str, output: str,
+                     agent: str = "BORE-01", tick: int | None = None):
+    if telemetry:
+        telemetry.emit({
+            "type": "tool_result",
+            "data": {"tool": tool, "output": output[:200]},
+            "agent": agent, "tick": tick,
+        })
+
+
+def emit_error(telemetry: Telemetry | None, message: str,
+               agent: str = "BORE-01", tick: int | None = None):
+    if telemetry:
+        telemetry.emit({
+            "type": "error",
+            "data": {"message": message},
+            "agent": agent, "tick": tick,
+        })
+
+
+def emit_status(telemetry: Telemetry | None, data: dict,
+                agent: str = "BORE-01", tick: int | None = None):
+    if telemetry:
+        telemetry.emit({
+            "type": "status",
+            "data": data,
+            "agent": agent, "tick": tick,
+        })
 
 
 # ============================================================
@@ -510,6 +740,7 @@ def call_claude_with_tools(
     client, model: str, conversation: list[dict],
     rcon: RCONClient, player_index: int,
     factorioctl_bin: str | None, rcon_host: str, rcon_port: int, rcon_password: str,
+    telemetry: Telemetry | None = None,
 ) -> str:
     """Call Claude with tool use loop. Returns final text response."""
     import anthropic
@@ -544,6 +775,7 @@ def call_claude_with_tools(
         tool_results = []
         for tu in tool_uses:
             print(f"  [tool] {tu.name}({json.dumps(tu.input, separators=(',', ':'))})")
+            emit_tool_call(telemetry, tu.name, tu.input)
 
             try:
                 send_tool_status(rcon, player_index, tu.name)
@@ -555,6 +787,7 @@ def call_claude_with_tools(
                 tu.name, tu.input,
             )
             print(f"  [result] {result[:200]}")
+            emit_tool_result(telemetry, tu.name, result)
 
             tool_results.append({
                 "type": "tool_result",
@@ -567,7 +800,7 @@ def call_claude_with_tools(
     return "(max tool rounds reached)"
 
 
-def run_api_mode(args, rcon, watcher):
+def run_api_mode(args, rcon, watcher, telemetry=None):
     """Run in direct Anthropic API mode."""
     import anthropic
 
@@ -590,6 +823,7 @@ def run_api_mode(args, rcon, watcher):
                 message = msg["message"]
 
                 print(f"[{player_name}] {message}")
+                emit_chat(telemetry, "player", message)
 
                 try:
                     set_status(rcon, player_index,
@@ -619,16 +853,20 @@ def run_api_mode(args, rcon, watcher):
                         api_client, args.model, conv,
                         rcon, player_index,
                         factorioctl_bin, args.rcon_host, args.rcon_port, args.rcon_password,
+                        telemetry=telemetry,
                     )
                     print(f"[Claude] {reply}\n")
+                    emit_chat(telemetry, "agent", reply)
                     send_response(rcon, player_index, reply)
                 except anthropic.APIError as e:
                     error_msg = f"API error: {e.message}"
                     print(f"[Error] {error_msg}")
+                    emit_error(telemetry, error_msg)
                     send_response(rcon, player_index, error_msg)
                 except Exception as e:
                     error_msg = f"Error: {str(e)[:200]}"
                     print(f"[Error] {e}")
+                    emit_error(telemetry, error_msg)
                     send_response(rcon, player_index, error_msg)
 
     except KeyboardInterrupt:
@@ -639,7 +877,7 @@ def run_api_mode(args, rcon, watcher):
 # Mode: Claude Code SDK
 # ============================================================
 
-def run_claude_code_mode(args, rcon, watcher):
+def run_claude_code_mode(args, rcon, watcher, telemetry=None):
     """Run in Claude Code SDK mode — all factorioctl tools via MCP."""
     try:
         from claude_code_sdk import (
@@ -694,6 +932,7 @@ def run_claude_code_mode(args, rcon, watcher):
     async def handle_message(player_index: int, player_name: str, message: str):
         """Handle a single player message via Claude Code SDK."""
         print(f"[{player_name}] {message}")
+        emit_chat(telemetry, "player", message)
 
         try:
             set_status(rcon, player_index,
@@ -723,6 +962,7 @@ def run_claude_code_mode(args, rcon, watcher):
                             if tool_display.startswith("mcp__factorioctl__"):
                                 tool_display = tool_display[18:]
                             print(f"  [tool] {tool_display}")
+                            emit_tool_call(telemetry, tool_display, block.input)
                             try:
                                 send_tool_status(rcon, player_index, tool_display)
                             except Exception:
@@ -731,12 +971,18 @@ def run_claude_code_mode(args, rcon, watcher):
                     new_session_id = msg.session_id
                     if msg.total_cost_usd is not None:
                         print(f"  [cost] ${msg.total_cost_usd:.4f}")
+                        emit_status(telemetry, {
+                            "cost_usd": msg.total_cost_usd,
+                            "turns": msg.num_turns,
+                            "duration_ms": msg.duration_ms,
+                        })
 
             await client.disconnect()
 
         except Exception as e:
             error_msg = f"Error: {str(e)[:200]}"
             print(f"[Error] {e}")
+            emit_error(telemetry, error_msg)
             send_response(rcon, player_index, error_msg)
             set_status(rcon, player_index, "[color=0.4,0.8,0.4]Ready[/color]")
             return
@@ -750,6 +996,7 @@ def run_claude_code_mode(args, rcon, watcher):
         reply = reply.replace("**", "").replace("```", "").replace("##", "")
 
         print(f"[Claude] {reply}\n")
+        emit_chat(telemetry, "agent", reply)
         send_response(rcon, player_index, reply)
 
     async def async_main():
@@ -804,6 +1051,14 @@ def main():
                         help="Path to factorioctl binary (api mode)")
     parser.add_argument("--factorioctl-mcp", default=None,
                         help="Path to factorioctl MCP server binary (claude-code mode)")
+    parser.add_argument("--sse", action="store_true",
+                        help="Enable SSE telemetry server for live monitoring dashboards")
+    parser.add_argument("--sse-port", type=int, default=8088,
+                        help="Port for SSE telemetry server (default: 8088)")
+    parser.add_argument("--relay", default=None,
+                        help="URL of the remote relay (e.g., https://bore-relay.you.workers.dev)")
+    parser.add_argument("--relay-token", default=None,
+                        help="Auth token for the relay (or set RELAY_TOKEN env var)")
     args = parser.parse_args()
 
     # Set model default based on mode
@@ -848,13 +1103,37 @@ def main():
         print("WARNING: claude-interface mod not detected.")
         print("  Bridge will still run and queue responses.\n")
 
+    # Build telemetry bus (local SSE + remote relay)
+    sse_broadcaster = None
+    relay_pusher = None
+    telemetry = None
+
+    if args.sse:
+        try:
+            sse_broadcaster = SSEBroadcaster()
+            start_sse_server(sse_broadcaster, args.sse_port)
+            print(f"  SSE server:  http://localhost:{args.sse_port}/events")
+        except OSError as e:
+            print(f"  SSE server:  failed to start ({e})")
+
+    if args.relay:
+        token = args.relay_token or os.environ.get("RELAY_TOKEN", "")
+        if not token:
+            print("WARNING: --relay set but no --relay-token or RELAY_TOKEN env var")
+        else:
+            relay_pusher = RelayPusher(args.relay, token)
+            print(f"  Relay:       {args.relay}")
+
+    if sse_broadcaster or relay_pusher:
+        telemetry = Telemetry(sse=sse_broadcaster, relay=relay_pusher)
+
     watcher = InputWatcher(input_file)
 
     try:
         if args.mode == "claude-code":
-            run_claude_code_mode(args, rcon, watcher)
+            run_claude_code_mode(args, rcon, watcher, telemetry)
         else:
-            run_api_mode(args, rcon, watcher)
+            run_api_mode(args, rcon, watcher, telemetry)
     finally:
         rcon.close()
         print("Done.")

@@ -18,5 +18,10 @@ Thumbs.db
 *.swp
 *.swo
 
+# Relay
+relay/node_modules/
+relay/.dev.vars
+relay/.wrangler/
+
 # Claude Code
 .claude/
