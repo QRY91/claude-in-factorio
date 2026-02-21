@@ -1,0 +1,19 @@
+{
+  "_comment": "Minimal server settings for factorioctl testing",
+  "name": "factorioctl-test",
+  "description": "Test server for factorioctl development",
+  "tags": ["test"],
+  "max_players": 0,
+  "visibility": {
+    "public": false,
+    "lan": false
+  },
+  "require_user_verification": false,
+  "auto_pause": false,
+  "auto_pause_when_players_connect": false,
+  "autosave_interval": 0,
+  "autosave_slots": 1,
+  "afk_autokick_interval": 0,
+  "allow_commands": "true",
+  "only_admins_can_pause_the_game": false
+}

@@ -1,0 +1,34 @@
+{
+  "_comment": "Peaceful test map with no enemies for factorioctl testing",
+  "width": 0,
+  "height": 0,
+  "starting_area": 1,
+  "peaceful_mode": true,
+  "autoplace_controls": {
+    "coal": {"frequency": 1, "size": 1, "richness": 1},
+    "stone": {"frequency": 1, "size": 1, "richness": 1},
+    "copper-ore": {"frequency": 1, "size": 1, "richness": 1},
+    "iron-ore": {"frequency": 1, "size": 1, "richness": 1},
+    "uranium-ore": {"frequency": 1, "size": 1, "richness": 1},
+    "crude-oil": {"frequency": 1, "size": 1, "richness": 1},
+    "water": {"frequency": 1, "size": 1},
+    "trees": {"frequency": 1, "size": 1},
+    "enemy-base": {"frequency": 0, "size": 0}
+  },
+  "cliff_settings": {
+    "name": "cliff",
+    "cliff_elevation_0": 10,
+    "cliff_elevation_interval": 40,
+    "richness": 0
+  },
+  "property_expression_names": {
+    "control:moisture:frequency": "1",
+    "control:moisture:bias": "0",
+    "control:aux:frequency": "1",
+    "control:aux:bias": "0"
+  },
+  "starting_points": [
+    {"x": 0, "y": 0}
+  ],
+  "seed": 12345
+}

@@ -1,12 +1,27 @@
-# API keys
+# API keys / secrets
 .env
 bridge/.env
+
+# Factorio server runtime (personal)
+.factorio-server/
+.factorio-server-data/
+saves/
+logs/
+
+# factorioctl (cloned separately)
+factorioctl/
 
 # Python
 __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Relay
+relay/node_modules/
+relay/package-lock.json
+relay/.dev.vars
+relay/.wrangler/
 
 # OS
 .DS_Store
@@ -17,11 +32,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
-
-# Relay
-relay/node_modules/
-relay/.dev.vars
-relay/.wrangler/
 
 # Claude Code
 .claude/
