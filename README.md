@@ -81,17 +81,37 @@ In Factorio, press **Ctrl+Shift+C** or click the **AI** button in the top bar.
 
 Type a message and hit Enter. Claude will respond in the chat panel.
 
+### Claude Code Mode (recommended)
+
+If you have [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed, you can run the bridge in Claude Code mode. This gives Claude access to **all 40+ factorioctl tools** automatically via MCP — belt routing, power analysis, zone management, inserter diagnostics, and much more.
+
+```bash
+# Requires: npm install -g @anthropic-ai/claude-code
+python bridge/bridge.py --mode claude-code
+```
+
+Claude Code mode vs API mode:
+
+| | API mode (default) | Claude Code mode |
+|---|---|---|
+| Tools | 12 hand-defined | 40+ via MCP (automatic) |
+| Setup | API key only | API key + Claude Code CLI |
+| Features | Basic game interaction | Full factory automation |
+| Conversation | In-bridge memory | Session resume via Claude Code |
+
 ### Options
 
 ```
 python bridge/bridge.py --help
 
+  --mode            api or claude-code (default: api)
   --rcon-host       RCON host (default: localhost)
   --rcon-port       RCON port (default: 27015)
   --rcon-password   RCON password (default: factorio)
-  --model           Claude model (default: claude-sonnet-4-20250514)
+  --model           Claude model (api default: claude-sonnet-4-20250514)
   --poll-interval   Seconds between file polls (default: 0.5)
-  --factorioctl     Path to factorioctl binary
+  --factorioctl     Path to factorioctl binary (api mode)
+  --factorioctl-mcp Path to factorioctl MCP binary (claude-code mode)
   --script-output   Path to Factorio script-output directory
 ```
 
@@ -107,7 +127,9 @@ Or in your `server-settings.json` / launch config. The defaults (`localhost:2701
 
 ## Tool Access
 
-When [factorioctl](https://github.com/jacobobryant/factorioctl) is installed, Claude gets game tools:
+Requires [factorioctl](https://github.com/jacobobryant/factorioctl). Without it, Claude can still chat but can't interact with the game.
+
+**API mode** exposes 12 core tools:
 
 | Tool | What it does |
 |------|-------------|
@@ -124,7 +146,7 @@ When [factorioctl](https://github.com/jacobobryant/factorioctl) is installed, Cl
 | `get_tick` | Game time |
 | `research_status` | Research progress and lab status |
 
-Without factorioctl, Claude can still chat — it just can't interact with the game world.
+**Claude Code mode** gets all 40+ factorioctl tools automatically via MCP, including: belt routing with A* pathfinding, inserter analysis, power grid diagnostics, zone management, resource scanning, sushi belt detection, and more.
 
 ## GUI Controls
 

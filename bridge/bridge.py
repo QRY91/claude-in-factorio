@@ -3,17 +3,18 @@
 Claude-in-Factorio Bridge
 
 Watches for player messages written by the claude-interface mod,
-sends them to Claude via the Anthropic API with factorioctl tools,
-and relays responses back into the game via RCON.
+sends them to Claude, and relays responses back into the game via RCON.
+
+Two modes:
+  --mode api          Direct Anthropic API with 12 hand-defined tools (default)
+  --mode claude-code  Claude Code SDK with all 40+ factorioctl MCP tools
 
 Usage:
-    python bridge.py [--rcon-host localhost] [--rcon-port 27015]
-                     [--rcon-password factorio]
-                     [--script-output PATH]
-                     [--model claude-sonnet-4-20250514]
+    python bridge.py [--mode api|claude-code] [--rcon-port 27015] ...
 """
 
 import argparse
+import asyncio
 import json
 import os
 import shutil
@@ -34,12 +35,6 @@ if _env_file.exists():
             _key, _val = _key.strip(), _val.strip()
             if _val and _key not in os.environ:
                 os.environ[_key] = _val
-
-try:
-    import anthropic
-except ImportError:
-    print("Missing dependency. Install with: pip install anthropic")
-    sys.exit(1)
 
 
 # ============================================================
@@ -163,7 +158,120 @@ def check_mod_loaded(rcon: RCONClient) -> bool:
 
 
 # ============================================================
-# Factorioctl Tool Definitions
+# File Watcher
+# ============================================================
+
+class InputWatcher:
+    def __init__(self, input_file: Path):
+        self.input_file = input_file
+        self.last_size = 0
+        if input_file.exists():
+            self.last_size = input_file.stat().st_size
+
+    def poll(self) -> list[dict]:
+        if not self.input_file.exists():
+            return []
+        current_size = self.input_file.stat().st_size
+        if current_size <= self.last_size:
+            return []
+        messages = []
+        with open(self.input_file, "r") as f:
+            f.seek(self.last_size)
+            new_data = f.read()
+        self.last_size = current_size
+        for line in new_data.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+                if msg.get("message"):
+                    messages.append(msg)
+            except json.JSONDecodeError:
+                continue
+        return messages
+
+
+# ============================================================
+# Path Discovery
+# ============================================================
+
+def find_script_output() -> Path:
+    """Find the Factorio script-output directory."""
+    env_val = os.environ.get("FACTORIO_SERVER_DATA")
+    if env_val:
+        p = Path(env_val) / "script-output"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    search = Path.cwd()
+    while search != search.parent:
+        candidate = search / ".factorio-server-data" / "script-output"
+        if candidate.parent.exists():
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate
+        search = search.parent
+
+    fallback_candidates = [
+        Path(os.path.expanduser("~/.factorio/script-output")),
+        Path(os.path.expanduser(
+            "~/.var/app/com.valvesoftware.Steam/.local/share/Steam/"
+            "steamapps/common/Factorio/script-output"
+        )),
+    ]
+    for c in fallback_candidates:
+        if c.parent.exists():
+            c.mkdir(parents=True, exist_ok=True)
+            return c
+
+    raise FileNotFoundError(
+        "Could not find Factorio script-output directory. "
+        "Set FACTORIO_SERVER_DATA or run from the project root."
+    )
+
+
+def find_factorioctl() -> str | None:
+    """Find the factorioctl binary. Returns None if not found."""
+    env_val = os.environ.get("FACTORIOCTL_BIN")
+    if env_val and os.path.isfile(env_val):
+        return env_val
+
+    search = Path.cwd()
+    while search != search.parent:
+        candidate = search / "factorioctl" / "target" / "release" / "factorioctl"
+        if candidate.is_file():
+            return str(candidate)
+        search = search.parent
+
+    found = shutil.which("factorioctl")
+    if found:
+        return found
+
+    return None
+
+
+def find_factorioctl_mcp() -> str | None:
+    """Find the factorioctl MCP server binary."""
+    env_val = os.environ.get("FACTORIOCTL_MCP_BIN")
+    if env_val and os.path.isfile(env_val):
+        return env_val
+
+    search = Path.cwd()
+    while search != search.parent:
+        candidate = search / "factorioctl" / "target" / "release" / "mcp"
+        if candidate.is_file():
+            return str(candidate)
+        search = search.parent
+
+    found = shutil.which("factorioctl-mcp")
+    if found:
+        return found
+
+    return None
+
+
+# ============================================================
+# Mode: Direct API (original)
 # ============================================================
 
 TOOLS = [
@@ -294,6 +402,24 @@ TOOLS = [
 ]
 
 
+SYSTEM_PROMPT = """\
+You are Claude, an AI agent embedded in a Factorio game. \
+The player is chatting with you through an in-game GUI panel.
+
+You have tools to observe and control the game: view the map, check inventory, \
+walk around, place buildings, mine resources, craft items, and more.
+
+Guidelines:
+- Keep text responses concise. They render in a game GUI with limited width.
+- Use short paragraphs. No markdown (no **, ##, ```, etc.) - plain text only.
+- Factorio rich text is OK: [color=r,g,b]text[/color], [item=iron-plate]
+- When asked to do something in-game, use your tools to do it.
+- When reporting game state, use tools to get actual data rather than guessing.
+- You can use multiple tools in sequence to accomplish complex tasks.
+- After taking actions, briefly summarize what you did.
+"""
+
+
 def build_factorioctl_cmd(
     factorioctl_bin: str, host: str, port: int, password: str,
     tool_name: str, tool_input: dict,
@@ -303,10 +429,8 @@ def build_factorioctl_cmd(
 
     if tool_name == "get_character":
         return base + ["character", "status"]
-
     if tool_name == "get_inventory":
         return base + ["character", "inventory"]
-
     if tool_name == "render_map":
         cmd = base + ["map"]
         if "radius" in tool_input:
@@ -316,51 +440,42 @@ def build_factorioctl_cmd(
         if "y" in tool_input:
             cmd.append(f"--y={tool_input['y']}")
         return cmd
-
     if tool_name == "get_entities":
         area = f"{tool_input['x1']},{tool_input['y1']},{tool_input['x2']},{tool_input['y2']}"
         cmd = base + ["get", "entities", "--area", area]
         if "name" in tool_input:
             cmd.extend(["--name", tool_input["name"]])
         return cmd
-
     if tool_name == "get_resources":
         area = f"{tool_input['x1']},{tool_input['y1']},{tool_input['x2']},{tool_input['y2']}"
         cmd = base + ["get", "resources", "--area", area]
         if "type" in tool_input:
             cmd.extend(["--entity-type", tool_input["type"]])
         return cmd
-
     if tool_name == "walk_to":
         pos = f"{tool_input['x']},{tool_input['y']}"
         return base + ["walk-to", "--pathfind", pos]
-
     if tool_name == "place_entity":
         pos = f"{tool_input['x']},{tool_input['y']}"
         cmd = base + ["place", tool_input["entity"], "--at", pos]
         if "direction" in tool_input:
             cmd.extend(["--direction", tool_input["direction"]])
         return cmd
-
     if tool_name == "mine_at":
         pos = f"{tool_input['x']},{tool_input['y']}"
         cmd = base + ["mine", "--at", pos]
         if "count" in tool_input:
             cmd.extend(["--count", str(tool_input["count"])])
         return cmd
-
     if tool_name == "craft":
         cmd = base + ["craft", tool_input["recipe"]]
         if "count" in tool_input:
             cmd.extend(["--count", str(tool_input["count"])])
         return cmd
-
     if tool_name == "say":
         return base + ["say", tool_input["message"]]
-
     if tool_name == "get_tick":
         return base + ["get", "tick"]
-
     if tool_name == "research_status":
         return base + ["research", "status"]
 
@@ -391,40 +506,13 @@ def execute_tool(
         return f"Error: {e}"
 
 
-# ============================================================
-# Claude API with Tool Use
-# ============================================================
-
-SYSTEM_PROMPT = """\
-You are Claude, an AI agent embedded in a Factorio game. \
-The player is chatting with you through an in-game GUI panel.
-
-You have tools to observe and control the game: view the map, check inventory, \
-walk around, place buildings, mine resources, craft items, and more.
-
-Guidelines:
-- Keep text responses concise. They render in a game GUI with limited width.
-- Use short paragraphs. No markdown (no **, ##, ```, etc.) - plain text only.
-- Factorio rich text is OK: [color=r,g,b]text[/color], [item=iron-plate]
-- When asked to do something in-game, use your tools to do it.
-- When reporting game state, use tools to get actual data rather than guessing.
-- You can use multiple tools in sequence to accomplish complex tasks.
-- After taking actions, briefly summarize what you did.
-"""
-
-
 def call_claude_with_tools(
-    client: anthropic.Anthropic,
-    model: str,
-    conversation: list[dict],
-    rcon: RCONClient,
-    player_index: int,
-    factorioctl_bin: str | None,
-    rcon_host: str,
-    rcon_port: int,
-    rcon_password: str,
+    client, model: str, conversation: list[dict],
+    rcon: RCONClient, player_index: int,
+    factorioctl_bin: str | None, rcon_host: str, rcon_port: int, rcon_password: str,
 ) -> str:
     """Call Claude with tool use loop. Returns final text response."""
+    import anthropic
 
     MAX_TOOL_ROUNDS = 10
     use_tools = factorioctl_bin is not None
@@ -440,7 +528,6 @@ def call_claude_with_tools(
             kwargs["tools"] = TOOLS
         response = client.messages.create(**kwargs)
 
-        # Collect text and tool_use blocks
         text_parts = []
         tool_uses = []
         for block in response.content:
@@ -449,19 +536,15 @@ def call_claude_with_tools(
             elif block.type == "tool_use":
                 tool_uses.append(block)
 
-        # Append assistant message to conversation
         conversation.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason != "tool_use" or not tool_uses:
-            # Done — return text
             return "\n".join(text_parts) if text_parts else "(action complete)"
 
-        # Execute tools and build results
         tool_results = []
         for tu in tool_uses:
             print(f"  [tool] {tu.name}({json.dumps(tu.input, separators=(',', ':'))})")
 
-            # Show tool use in-game
             try:
                 send_tool_status(rcon, player_index, tu.name)
             except Exception:
@@ -484,163 +567,16 @@ def call_claude_with_tools(
     return "(max tool rounds reached)"
 
 
-# ============================================================
-# File Watcher
-# ============================================================
+def run_api_mode(args, rcon, watcher):
+    """Run in direct Anthropic API mode."""
+    import anthropic
 
-class InputWatcher:
-    def __init__(self, input_file: Path):
-        self.input_file = input_file
-        self.last_size = 0
-        if input_file.exists():
-            self.last_size = input_file.stat().st_size
+    factorioctl_bin = args.factorioctl_bin
 
-    def poll(self) -> list[dict]:
-        if not self.input_file.exists():
-            return []
-        current_size = self.input_file.stat().st_size
-        if current_size <= self.last_size:
-            return []
-        messages = []
-        with open(self.input_file, "r") as f:
-            f.seek(self.last_size)
-            new_data = f.read()
-        self.last_size = current_size
-        for line in new_data.strip().split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-                if msg.get("message"):
-                    messages.append(msg)
-            except json.JSONDecodeError:
-                continue
-        return messages
-
-
-# ============================================================
-# Main Loop
-# ============================================================
-
-def find_script_output() -> Path:
-    """Find the Factorio script-output directory."""
-    env_val = os.environ.get("FACTORIO_SERVER_DATA")
-    if env_val:
-        p = Path(env_val) / "script-output"
-        p.mkdir(parents=True, exist_ok=True)
-        return p
-
-    search = Path.cwd()
-    while search != search.parent:
-        candidate = search / ".factorio-server-data" / "script-output"
-        if candidate.parent.exists():
-            candidate.mkdir(parents=True, exist_ok=True)
-            return candidate
-        search = search.parent
-
-    fallback_candidates = [
-        Path(os.path.expanduser("~/.factorio/script-output")),
-        Path(os.path.expanduser(
-            "~/.var/app/com.valvesoftware.Steam/.local/share/Steam/"
-            "steamapps/common/Factorio/script-output"
-        )),
-    ]
-    for c in fallback_candidates:
-        if c.parent.exists():
-            c.mkdir(parents=True, exist_ok=True)
-            return c
-
-    raise FileNotFoundError(
-        "Could not find Factorio script-output directory. "
-        "Set FACTORIO_SERVER_DATA or run from the project root."
-    )
-
-
-def find_factorioctl() -> str:
-    """Find the factorioctl binary."""
-    # Check env var
-    env_val = os.environ.get("FACTORIOCTL_BIN")
-    if env_val and os.path.isfile(env_val):
-        return env_val
-
-    # Walk up from cwd
-    search = Path.cwd()
-    while search != search.parent:
-        candidate = search / "factorioctl" / "target" / "release" / "factorioctl"
-        if candidate.is_file():
-            return str(candidate)
-        search = search.parent
-
-    # Check PATH
-    found = shutil.which("factorioctl")
-    if found:
-        return found
-
-    return None  # factorioctl is optional — chat-only mode without it
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Claude-in-Factorio Bridge",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument("--rcon-host", default="localhost")
-    parser.add_argument("--rcon-port", type=int, default=27015)
-    parser.add_argument("--rcon-password", default="factorio")
-    parser.add_argument("--script-output", default=None,
-                        help="Path to Factorio script-output directory")
-    parser.add_argument("--model", default="claude-sonnet-4-20250514")
-    parser.add_argument("--poll-interval", type=float, default=0.5,
-                        help="Seconds between file polls")
-    parser.add_argument("--factorioctl", default=None,
-                        help="Path to factorioctl binary")
-    args = parser.parse_args()
-
-    # Resolve paths
-    if args.script_output:
-        script_output = Path(args.script_output)
-    else:
-        script_output = find_script_output()
-
-    if args.factorioctl:
-        factorioctl_bin = args.factorioctl
-    else:
-        factorioctl_bin = find_factorioctl()
-
-    input_file = script_output / "claude-chat" / "input.jsonl"
-    input_file.parent.mkdir(parents=True, exist_ok=True)
-
-    tools_enabled = factorioctl_bin is not None
-
-    print("Claude-in-Factorio Bridge")
-    print(f"  RCON:        {args.rcon_host}:{args.rcon_port}")
-    print(f"  Input:       {input_file}")
-    print(f"  Model:       {args.model}")
-    if tools_enabled:
-        print(f"  factorioctl: {factorioctl_bin}")
-    else:
-        print(f"  factorioctl: not found (chat-only mode — install factorioctl for game tools)")
-    print()
-
-    # Connect to RCON
-    print("Connecting to Factorio RCON...")
-    rcon = RCONClient(args.rcon_host, args.rcon_port, args.rcon_password)
-    print("RCON connected!")
-
-    if check_mod_loaded(rcon):
-        print("claude-interface mod detected!")
-    else:
-        print("WARNING: claude-interface mod not detected.")
-        print("  Bridge will still run and queue responses.\n")
-
-    # Initialize API client
     api_client = anthropic.Anthropic()
     print(f"Anthropic API ready (model: {args.model})")
 
-    # Per-player conversation history
     conversations: dict[int, list[dict]] = {}
-    watcher = InputWatcher(input_file)
 
     print("\nWatching for messages... (Ctrl+C to stop)\n")
 
@@ -666,14 +602,12 @@ def main():
                 conv = conversations[player_index]
                 conv.append({"role": "user", "content": message})
 
-                # Trim conversation — find a safe cut point that doesn't
-                # split tool_use/tool_result pairs (must start with user text)
+                # Trim conversation — safe cut point that doesn't split tool pairs
                 if len(conv) > 50:
                     cut = len(conv) - 40
                     while cut < len(conv):
-                        msg = conv[cut]
-                        # Safe to start on a user message with plain text content
-                        if msg["role"] == "user" and isinstance(msg.get("content"), str):
+                        m = conv[cut]
+                        if m["role"] == "user" and isinstance(m.get("content"), str):
                             break
                         cut += 1
                     if cut < len(conv):
@@ -681,7 +615,6 @@ def main():
                         conv = conversations[player_index]
 
                 try:
-                    # call_claude_with_tools mutates conv directly
                     reply = call_claude_with_tools(
                         api_client, args.model, conv,
                         rcon, player_index,
@@ -700,6 +633,228 @@ def main():
 
     except KeyboardInterrupt:
         print("\nShutting down...")
+
+
+# ============================================================
+# Mode: Claude Code SDK
+# ============================================================
+
+def run_claude_code_mode(args, rcon, watcher):
+    """Run in Claude Code SDK mode — all factorioctl tools via MCP."""
+    try:
+        from claude_code_sdk import (
+            ClaudeSDKClient,
+            ClaudeCodeOptions,
+            AssistantMessage,
+            ResultMessage,
+            TextBlock,
+            ToolUseBlock,
+        )
+    except ImportError:
+        print("ERROR: claude-code-sdk not installed.")
+        print("  Install with: pip install claude-code-sdk")
+        print("  Also requires: npm install -g @anthropic-ai/claude-code")
+        sys.exit(1)
+
+    mcp_bin = args.factorioctl_mcp_bin
+
+    # Build MCP server config for factorioctl
+    mcp_servers: dict = {}
+    if mcp_bin:
+        mcp_servers["factorioctl"] = {
+            "type": "stdio",
+            "command": mcp_bin,
+            "env": {
+                "FACTORIO_RCON_HOST": args.rcon_host,
+                "FACTORIO_RCON_PORT": str(args.rcon_port),
+                "FACTORIO_RCON_PASSWORD": args.rcon_password,
+            },
+        }
+        print(f"  MCP server:  {mcp_bin}")
+    else:
+        print("  MCP server:  not found (chat-only — install factorioctl for game tools)")
+
+    # Per-player persistent sessions
+    clients: dict[int, ClaudeSDKClient] = {}
+    sessions: dict[int, str] = {}  # player_index -> session_id
+
+    def make_options(session_id: str | None = None) -> ClaudeCodeOptions:
+        opts = ClaudeCodeOptions(
+            system_prompt=SYSTEM_PROMPT,
+            mcp_servers=mcp_servers,
+            permission_mode="bypassPermissions",
+            max_turns=15,
+        )
+        if args.model:
+            opts.model = args.model
+        if session_id:
+            opts.resume = session_id
+        return opts
+
+    async def handle_message(player_index: int, player_name: str, message: str):
+        """Handle a single player message via Claude Code SDK."""
+        print(f"[{player_name}] {message}")
+
+        try:
+            set_status(rcon, player_index,
+                       "[color=1,0.8,0.2]Thinking...[/color]")
+        except Exception as e:
+            print(f"[bridge] RCON status update failed: {e}")
+
+        session_id = sessions.get(player_index)
+        options = make_options(session_id)
+
+        text_parts = []
+        new_session_id = None
+
+        try:
+            # Use ClaudeSDKClient for persistent multi-turn conversation
+            client = ClaudeSDKClient(options)
+            await client.connect(message)
+
+            async for msg in client.receive_response():
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            text_parts.append(block.text)
+                        elif isinstance(block, ToolUseBlock):
+                            tool_display = block.name
+                            # Strip mcp__factorioctl__ prefix for display
+                            if tool_display.startswith("mcp__factorioctl__"):
+                                tool_display = tool_display[18:]
+                            print(f"  [tool] {tool_display}")
+                            try:
+                                send_tool_status(rcon, player_index, tool_display)
+                            except Exception:
+                                pass
+                elif isinstance(msg, ResultMessage):
+                    new_session_id = msg.session_id
+                    if msg.total_cost_usd is not None:
+                        print(f"  [cost] ${msg.total_cost_usd:.4f}")
+
+            await client.disconnect()
+
+        except Exception as e:
+            error_msg = f"Error: {str(e)[:200]}"
+            print(f"[Error] {e}")
+            send_response(rcon, player_index, error_msg)
+            set_status(rcon, player_index, "[color=0.4,0.8,0.4]Ready[/color]")
+            return
+
+        # Save session for conversation continuity
+        if new_session_id:
+            sessions[player_index] = new_session_id
+
+        reply = "\n".join(text_parts) if text_parts else "(action complete)"
+        # Strip any markdown that Claude Code might produce
+        reply = reply.replace("**", "").replace("```", "").replace("##", "")
+
+        print(f"[Claude] {reply}\n")
+        send_response(rcon, player_index, reply)
+
+    async def async_main():
+        print("\nWatching for messages... (Ctrl+C to stop)\n")
+
+        try:
+            while True:
+                await asyncio.sleep(args.poll_interval)
+
+                for msg in watcher.poll():
+                    player_index = msg.get("player_index", 1)
+                    player_name = msg.get("player_name", "Player")
+                    message = msg["message"]
+
+                    await handle_message(player_index, player_name, message)
+
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+
+        # Clean up any open clients
+        for client in clients.values():
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    asyncio.run(async_main())
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Claude-in-Factorio Bridge",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--mode", choices=["api", "claude-code"], default="api",
+                        help="Backend mode: 'api' for direct Anthropic API, "
+                             "'claude-code' for Claude Code SDK with full MCP tools")
+    parser.add_argument("--rcon-host", default="localhost")
+    parser.add_argument("--rcon-port", type=int, default=27015)
+    parser.add_argument("--rcon-password", default="factorio")
+    parser.add_argument("--script-output", default=None,
+                        help="Path to Factorio script-output directory")
+    parser.add_argument("--model", default=None,
+                        help="Claude model (default: claude-sonnet-4-20250514 for api mode)")
+    parser.add_argument("--poll-interval", type=float, default=0.5,
+                        help="Seconds between file polls")
+    parser.add_argument("--factorioctl", default=None,
+                        help="Path to factorioctl binary (api mode)")
+    parser.add_argument("--factorioctl-mcp", default=None,
+                        help="Path to factorioctl MCP server binary (claude-code mode)")
+    args = parser.parse_args()
+
+    # Set model default based on mode
+    if args.model is None and args.mode == "api":
+        args.model = "claude-sonnet-4-20250514"
+
+    # Resolve paths
+    if args.script_output:
+        script_output = Path(args.script_output)
+    else:
+        script_output = find_script_output()
+
+    # Resolve tool binaries
+    if args.factorioctl:
+        args.factorioctl_bin = args.factorioctl
+    else:
+        args.factorioctl_bin = find_factorioctl()
+
+    if args.factorioctl_mcp:
+        args.factorioctl_mcp_bin = args.factorioctl_mcp
+    else:
+        args.factorioctl_mcp_bin = find_factorioctl_mcp()
+
+    input_file = script_output / "claude-chat" / "input.jsonl"
+    input_file.parent.mkdir(parents=True, exist_ok=True)
+
+    print("Claude-in-Factorio Bridge")
+    print(f"  Mode:        {args.mode}")
+    print(f"  RCON:        {args.rcon_host}:{args.rcon_port}")
+    print(f"  Input:       {input_file}")
+    if args.model:
+        print(f"  Model:       {args.model}")
+
+    # Connect to RCON
+    print("\nConnecting to Factorio RCON...")
+    rcon = RCONClient(args.rcon_host, args.rcon_port, args.rcon_password)
+    print("RCON connected!")
+
+    if check_mod_loaded(rcon):
+        print("claude-interface mod detected!")
+    else:
+        print("WARNING: claude-interface mod not detected.")
+        print("  Bridge will still run and queue responses.\n")
+
+    watcher = InputWatcher(input_file)
+
+    try:
+        if args.mode == "claude-code":
+            run_claude_code_mode(args, rcon, watcher)
+        else:
+            run_api_mode(args, rcon, watcher)
     finally:
         rcon.close()
         print("Done.")
