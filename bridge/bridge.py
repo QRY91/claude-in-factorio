@@ -1116,13 +1116,14 @@ def main():
         except OSError as e:
             print(f"  SSE server:  failed to start ({e})")
 
-    if args.relay:
+    relay_url = args.relay or os.environ.get("RELAY_URL", "")
+    if relay_url:
         token = args.relay_token or os.environ.get("RELAY_TOKEN", "")
         if not token:
-            print("WARNING: --relay set but no --relay-token or RELAY_TOKEN env var")
+            print("WARNING: relay URL set but no --relay-token or RELAY_TOKEN env var")
         else:
-            relay_pusher = RelayPusher(args.relay, token)
-            print(f"  Relay:       {args.relay}")
+            relay_pusher = RelayPusher(relay_url, token)
+            print(f"  Relay:       {relay_url}")
 
     if sse_broadcaster or relay_pusher:
         telemetry = Telemetry(sse=sse_broadcaster, relay=relay_pusher)
