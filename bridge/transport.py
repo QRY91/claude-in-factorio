@@ -38,6 +38,23 @@ def unregister_agent(rcon, agent_name: str):
     rcon.execute(lua)
 
 
+def setup_surfaces(rcon, planets: list[str]) -> dict[str, str]:
+    """Ensure planet surfaces exist. Creates them if missing.
+    Returns {planet: status} where status is 'exists' or 'created'."""
+    results = {}
+    for planet in planets:
+        lua = (
+            f'local p = game.planets["{planet}"] '
+            f'if not p then rcon.print("no_planet") return end '
+            f'if game.surfaces["{planet}"] then rcon.print("exists") return end '
+            f'p.create_surface() '
+            f'rcon.print("created")'
+        )
+        result = rcon.execute(f'/silent-command {lua}').strip()
+        results[planet] = result
+    return results
+
+
 def pre_place_character(rcon, agent_name: str, planet: str) -> str:
     """Create or teleport an agent's character to the specified planet surface.
     Returns status: already_placed, teleported, created, surface_not_found, creation_failed."""

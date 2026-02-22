@@ -38,7 +38,8 @@ if _env_file.exists():
 from rcon import RCONClient, ThreadSafeRCON
 from paths import find_script_output, find_factorioctl_mcp
 from transport import (InputWatcher, send_response, send_tool_status, set_status,
-                       check_mod_loaded, register_agent, unregister_agent, pre_place_character)
+                       check_mod_loaded, register_agent, unregister_agent,
+                       pre_place_character, setup_surfaces)
 from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, Telemetry, emit_chat, emit_tool_call, emit_error, emit_status
 
 _BRIDGE_DIR = Path(__file__).resolve().parent
@@ -522,6 +523,15 @@ def main_multi(args, agent_profiles: list[dict]):
     else:
         print("WARNING: claude-interface mod not detected.")
 
+    # Create planet surfaces if requested (for fresh worlds)
+    if args.setup_surfaces:
+        planets = list({a.get("planet", "nauvis") for a in agent_profiles} - {"nauvis"})
+        if planets:
+            print("\nSetting up planet surfaces...")
+            results = setup_surfaces(rcon, sorted(planets))
+            for planet, status in results.items():
+                print(f"  {planet}: {status}")
+
     # Pre-place characters on correct planets
     print("\nPre-placing characters...")
     for agent in agent_profiles:
@@ -611,6 +621,8 @@ def main():
     parser.add_argument("--sse-port", type=int, default=8088)
     parser.add_argument("--relay", default=None)
     parser.add_argument("--relay-token", default=None)
+    parser.add_argument("--setup-surfaces", action="store_true",
+                        help="Create planet surfaces before placing agents (for fresh worlds)")
     args = parser.parse_args()
 
     # Multi-agent mode
