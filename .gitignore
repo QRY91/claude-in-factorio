@@ -16,6 +16,7 @@ bridge/.mcp-config*.json
 
 # Session persistence (runtime)
 bridge/.sessions.json
+bridge/.session-*.json
 
 # Python
 __pycache__/

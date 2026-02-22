@@ -268,13 +268,16 @@ def handle_message(
     telemetry: Telemetry | None,
     agent_name: str = "default",
     telemetry_name: str | None = None,
+    response_to: str | None = None,
     model: str | None = None,
     max_turns: int = 15,
 ) -> str | None:
     """Pipe a message through claude CLI. Returns new session_id.
     agent_name: registered agent name (for RCON/mod).
-    telemetry_name: display name for telemetry/logs (defaults to agent_name)."""
+    telemetry_name: display name for telemetry/logs (defaults to agent_name).
+    response_to: if set, send response to this tab instead of agent_name (group chat)."""
     tname = telemetry_name or agent_name
+    rcon_target = response_to or agent_name
     cmd = build_claude_cmd(prompt, mcp_config, system_prompt, session_id, model, max_turns)
 
     resume_tag = f" (resume {session_id[:8]}...)" if session_id else " (new session)"
@@ -291,7 +294,7 @@ def handle_message(
         )
     except FileNotFoundError:
         print("[Error] 'claude' CLI not found. Install: npm install -g @anthropic-ai/claude-code")
-        send_response(rcon, player_index, agent_name, "Error: claude CLI not installed")
+        send_response(rcon, player_index, rcon_target, "Error: claude CLI not installed")
         return session_id
 
     text_parts = []
@@ -329,7 +332,7 @@ def handle_message(
                     print(f"  [{_ts()}] tool: {display}({input_summary})")
                     emit_tool_call(telemetry, display, tool_input, agent=tname)
                     try:
-                        send_tool_status(rcon, player_index, agent_name, display)
+                        send_tool_status(rcon, player_index, rcon_target, display)
                     except Exception:
                         pass
 
@@ -367,7 +370,7 @@ def handle_message(
             error_msg = f"Error: {stderr[:200]}"
             print(f"[Error] {stderr.strip()}")
             emit_error(telemetry, error_msg, agent=tname)
-            send_response(rcon, player_index, agent_name, error_msg)
+            send_response(rcon, player_index, rcon_target, error_msg)
             set_status(rcon, player_index, "[color=0.4,0.8,0.4]Ready[/color]")
             return new_session_id
 
@@ -378,7 +381,10 @@ def handle_message(
     print(f"[{tname}] {reply}\n")
     sections = parse_response(reply)
     emit_chat(telemetry, "agent", reply, agent=tname, sections=sections)
-    send_response(rcon, player_index, agent_name, reply)
+    # For group chat, prefix reply with agent name so reader knows who said what
+    if response_to:
+        reply = f"[color=1,0.6,0.2]{tname}:[/color] {reply}"
+    send_response(rcon, player_index, rcon_target, reply)
 
     return new_session_id
 
@@ -464,8 +470,11 @@ class AgentThread:
             player_index = msg.get("player_index", 1)
             player_name = msg.get("player_name", "Player")
             message = msg["message"]
+            response_to = msg.get("response_to")  # Group chat routing
 
-            print(f"[{player_name} -> {self.agent_name}] {message}")
+            target_label = response_to or self.agent_name
+            print(f"[{player_name} -> {target_label}:{self.agent_name}] {message}" if response_to
+                  else f"[{player_name} -> {self.agent_name}] {message}")
             emit_chat(self.telemetry, "player", message, agent=self.telemetry_name)
 
             try:
@@ -474,7 +483,8 @@ class AgentThread:
                 pass
 
             if not self.mcp_config:
-                send_response(self.rcon, player_index, self.agent_name,
+                rcon_target = response_to or self.agent_name
+                send_response(self.rcon, player_index, rcon_target,
                               "Error: factorioctl MCP not found")
                 continue
 
@@ -482,7 +492,7 @@ class AgentThread:
                 message, self.mcp_config, self.system_prompt, self.session_id,
                 self.rcon, player_index, self.telemetry,
                 agent_name=self.agent_name, telemetry_name=self.telemetry_name,
-                model=self.model, max_turns=self.max_turns,
+                response_to=response_to, model=self.model, max_turns=self.max_turns,
             )
             if new_session:
                 self.session_id = new_session
@@ -500,8 +510,10 @@ def main_multi(args, agent_profiles: list[dict]):
     mod_loaded = check_mod_loaded(rcon)
     if mod_loaded:
         print("claude-interface mod detected!")
-        # Unregister default, register all agents
+        # Unregister default, register group chat + all agents
         unregister_agent(rcon, "default")
+        register_agent(rcon, "all")
+        print(f"  Registered tab:   all (group chat)")
         for agent in agent_profiles:
             register_agent(rcon, agent["name"])
             print(f"  Registered agent: {agent['name']}")
@@ -557,7 +569,11 @@ def main_multi(args, agent_profiles: list[dict]):
             time.sleep(args.poll_interval)
             for msg in watcher.poll():
                 target = msg.get("target_agent", "default")
-                if target in agents:
+                if target == "all":
+                    # Fan out to all agents with response routing to "all" tab
+                    for at in agents.values():
+                        at.enqueue({**msg, "response_to": "all"})
+                elif target in agents:
                     agents[target].enqueue(msg)
                 else:
                     print(f"[warn] Message for unknown agent '{target}', dropping")
