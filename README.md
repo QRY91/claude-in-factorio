@@ -20,7 +20,13 @@ python bridge/bridge.py --mode claude-code
 # 3. Open Factorio via Steam → Multiplayer → Connect to: localhost:34197
 ```
 
-In-game: press **Ctrl+Shift+C** or click the **AI** button in the top bar. Type a message and hit Enter.
+In-game: press **Ctrl+Shift+C** or click the **Q button** in the shortcut bar (bottom-right). Type a message and hit Enter.
+
+To reset to a fresh world:
+```bash
+./stop-server.sh
+./start-server.sh --fresh
+```
 
 To stop:
 ```bash
@@ -99,18 +105,9 @@ xcopy /E mod\claude-interface "%APPDATA%\Factorio\mods\claude-interface\"
 
 If running a dedicated server, also install the mod on the server's mods directory.
 
-### 3. Create a save (first time only)
+### 3. Configure (optional)
 
-```bash
-mkdir -p saves
-/path/to/factorio --create saves/test_map.zip
-```
-
-Or copy an existing save into `saves/`.
-
-### 4. Configure server (optional)
-
-Edit `start-server.sh` to set your `FACTORIO_BIN` path if it's not auto-detected, or set it as an environment variable:
+The start script auto-detects Factorio from common Steam install locations. If it can't find it:
 
 ```bash
 export FACTORIO_BIN=/path/to/factorio
@@ -118,7 +115,7 @@ export FACTORIO_BIN=/path/to/factorio
 
 Default RCON settings (localhost:27015, password "factorio") work out of the box.
 
-### 5. Run
+### 4. Run
 
 ```bash
 # Start the Factorio server
@@ -190,7 +187,7 @@ python bridge/bridge.py --help
 ## GUI Controls
 
 - **Ctrl+Shift+C** — Toggle the chat panel
-- **AI button** (top bar) — Same thing
+- **Shortcut bar button** (bottom-right) — Same thing, repositionable
 - **S / M / L buttons** — Resize the panel
 - **Enter** — Send message
 - **Escape** — Close panel
@@ -207,7 +204,8 @@ claude-in-factorio/
 ├── mod/claude-interface/   # Factorio mod (copy to mods dir)
 │   ├── info.json
 │   ├── data.lua
-│   └── control.lua
+│   ├── control.lua
+│   └── graphics/          # Shortcut bar icon
 ├── relay/                  # Cloudflare Worker for live telemetry
 │   ├── src/index.ts
 │   └── wrangler.toml
@@ -226,6 +224,8 @@ claude-in-factorio/
 **RCON connection refused** — Server not running or wrong port. Run `./start-server.sh` and check `logs/server.log`.
 
 **Mod not showing up** — Copy the entire `claude-interface/` directory into `mods/`. Restart Factorio.
+
+**"Mod mismatch" when connecting** — The server and client must have the same mod version. Re-copy the mod to both your Steam mods directory *and* the server, then run `./start-server.sh --fresh` to create a new save with the updated mod.
 
 **Bridge can't find script-output** — Pass `--script-output /path/to/script-output/` or set `FACTORIO_SERVER_DATA` env var.
 

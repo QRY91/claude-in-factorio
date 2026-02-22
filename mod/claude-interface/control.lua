@@ -2,7 +2,6 @@
 -- Communication: write_file -> bridge daemon -> Claude API -> RCON -> remote interface
 
 local GUI_FRAME = "claude_interface_frame"
-local TOP_BUTTON = "claude_interface_toggle_btn"
 local MAX_MESSAGES = 100
 local INPUT_FILE = "claude-chat/input.jsonl"
 
@@ -29,23 +28,12 @@ local function get_size(player_index)
 end
 
 -- ============================================================
--- Top Bar Button
+-- Shortcut Bar State
 -- ============================================================
 
-local function ensure_top_button(player)
-    if player.gui.top[TOP_BUTTON] then return end
-    player.gui.top.add{
-        type = "sprite-button",
-        name = TOP_BUTTON,
-        caption = "AI",
-        tooltip = "Toggle Claude AI [Ctrl+Shift+C]",
-        style = "slot_button"
-    }
-end
-
-local function destroy_top_button(player)
-    local btn = player.gui.top[TOP_BUTTON]
-    if btn then btn.destroy() end
+local function update_shortcut_state(player)
+    local is_open = player.gui.screen[GUI_FRAME] ~= nil
+    player.set_shortcut_toggled("claude-interface-toggle", is_open)
 end
 
 -- ============================================================
@@ -219,6 +207,7 @@ local function toggle_gui(player)
     else
         create_gui(player)
     end
+    update_shortcut_state(player)
 end
 
 -- ============================================================
@@ -335,30 +324,30 @@ remote.add_interface("claude_interface", {
 -- Event Handlers
 -- ============================================================
 
-local function on_player_created(event)
-    local player = game.get_player(event.player_index)
-    if player then ensure_top_button(player) end
-end
+script.on_init(init_storage)
 
-local function setup_all_players()
+script.on_configuration_changed(function(data)
     init_storage()
+    -- Rebuild GUI for existing players after mod update
     for _, player in pairs(game.players) do
-        ensure_top_button(player)
+        local frame = player.gui.screen[GUI_FRAME]
+        if frame and frame.valid then
+            frame.destroy()
+            create_gui(player)
+        end
+        update_shortcut_state(player)
     end
-end
-
-script.on_init(setup_all_players)
-script.on_configuration_changed(setup_all_players)
-
-script.on_event(defines.events.on_player_created, on_player_created)
-
-script.on_event(defines.events.on_player_joined_game, function(event)
-    local player = game.get_player(event.player_index)
-    if player then ensure_top_button(player) end
 end)
 
 -- Hotkey toggle
 script.on_event("claude-interface-toggle", function(event)
+    local player = game.get_player(event.player_index)
+    if player then toggle_gui(player) end
+end)
+
+-- Shortcut bar toggle
+script.on_event(defines.events.on_lua_shortcut, function(event)
+    if event.prototype_name ~= "claude-interface-toggle" then return end
     local player = game.get_player(event.player_index)
     if player then toggle_gui(player) end
 end)
@@ -371,9 +360,9 @@ script.on_event(defines.events.on_gui_click, function(event)
     if name == "ci_send" then
         handle_send(game.get_player(event.player_index))
     elseif name == "ci_close" then
-        destroy_gui(game.get_player(event.player_index))
-    elseif name == TOP_BUTTON then
-        toggle_gui(game.get_player(event.player_index))
+        local player = game.get_player(event.player_index)
+        destroy_gui(player)
+        update_shortcut_state(player)
     elseif name:match("^ci_size_%d$") then
         local idx = tonumber(name:sub(-1))
         local player = game.get_player(event.player_index)
@@ -396,6 +385,8 @@ end)
 -- Escape closes
 script.on_event(defines.events.on_gui_closed, function(event)
     if event.element and event.element.valid and event.element.name == GUI_FRAME then
-        destroy_gui(game.get_player(event.player_index))
+        local player = game.get_player(event.player_index)
+        destroy_gui(player)
+        update_shortcut_state(player)
     end
 end)

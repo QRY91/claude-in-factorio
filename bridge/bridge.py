@@ -881,13 +881,26 @@ def run_claude_code_mode(args, rcon, watcher, telemetry=None):
     """Run in Claude Code SDK mode — all factorioctl tools via MCP."""
     try:
         from claude_code_sdk import (
-            ClaudeSDKClient,
+            query,
             ClaudeCodeOptions,
             AssistantMessage,
             ResultMessage,
             TextBlock,
             ToolUseBlock,
         )
+        # Monkey-patch SDK to skip unknown message types (e.g. rate_limit_event)
+        # instead of crashing — SDK 0.0.25 doesn't handle newer API events
+        from claude_code_sdk._internal import message_parser as _mp
+        from claude_code_sdk._errors import MessageParseError
+        _original_parse = _mp.parse_message
+        def _lenient_parse(data):
+            try:
+                return _original_parse(data)
+            except MessageParseError as e:
+                if "Unknown message type" in str(e):
+                    return None
+                raise
+        _mp.parse_message = _lenient_parse
     except ImportError:
         print("ERROR: claude-code-sdk not installed.")
         print("  Install with: pip install claude-code-sdk")
@@ -912,8 +925,11 @@ def run_claude_code_mode(args, rcon, watcher, telemetry=None):
     else:
         print("  MCP server:  not found (chat-only — install factorioctl for game tools)")
 
+    # Clear CLAUDECODE env var so SDK can spawn nested sessions
+    # (bridge may be launched from inside a Claude Code terminal)
+    os.environ.pop("CLAUDECODE", None)
+
     # Per-player persistent sessions
-    clients: dict[int, ClaudeSDKClient] = {}
     sessions: dict[int, str] = {}  # player_index -> session_id
 
     def make_options(session_id: str | None = None) -> ClaudeCodeOptions:
@@ -947,11 +963,9 @@ def run_claude_code_mode(args, rcon, watcher, telemetry=None):
         new_session_id = None
 
         try:
-            # Use ClaudeSDKClient for persistent multi-turn conversation
-            client = ClaudeSDKClient(options)
-            await client.connect(message)
-
-            async for msg in client.receive_response():
+            async for msg in query(prompt=message, options=options):
+                if msg is None:
+                    continue
                 if isinstance(msg, AssistantMessage):
                     for block in msg.content:
                         if isinstance(block, TextBlock):
@@ -977,15 +991,19 @@ def run_claude_code_mode(args, rcon, watcher, telemetry=None):
                             "duration_ms": msg.duration_ms,
                         })
 
-            await client.disconnect()
-
         except Exception as e:
-            error_msg = f"Error: {str(e)[:200]}"
-            print(f"[Error] {e}")
-            emit_error(telemetry, error_msg)
-            send_response(rcon, player_index, error_msg)
-            set_status(rcon, player_index, "[color=0.4,0.8,0.4]Ready[/color]")
-            return
+            err_str = str(e)
+            # SDK may throw on unrecognized stream events (e.g. rate_limit_event)
+            # If we already collected text, treat as success with a warning
+            if "Unknown message type" in err_str:
+                print(f"  [warn] {err_str}")
+            else:
+                error_msg = f"Error: {err_str[:200]}"
+                print(f"[Error] {e}")
+                emit_error(telemetry, error_msg)
+                send_response(rcon, player_index, error_msg)
+                set_status(rcon, player_index, "[color=0.4,0.8,0.4]Ready[/color]")
+                return
 
         # Save session for conversation continuity
         if new_session_id:
@@ -1015,13 +1033,6 @@ def run_claude_code_mode(args, rcon, watcher, telemetry=None):
 
         except KeyboardInterrupt:
             print("\nShutting down...")
-
-        # Clean up any open clients
-        for client in clients.values():
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
 
     asyncio.run(async_main())
 

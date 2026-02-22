@@ -3,6 +3,9 @@
     "version": "0.1.0",
     "title": "Claude Interface",
     "author": "qry",
+    "contact": "https://github.com/QRY91/claude-in-factorio",
+    "homepage": "https://github.com/QRY91/claude-in-factorio",
     "factorio_version": "2.0",
-    "description": "In-game chat interface for Claude AI agent. Talk to Claude directly from within Factorio."
+    "dependencies": ["base >= 2.0"],
+    "description": "In-game chat interface for Claude AI. Talk to Claude, let it build, mine, craft, and manage your factory. Requires the claude-in-factorio bridge."
 }
