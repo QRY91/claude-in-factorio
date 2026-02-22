@@ -37,6 +37,64 @@
     "group": {
       "type": "string",
       "description": "Group name for multi-agent mode. Use --group to launch all agents with the same group."
+    },
+    "response_format": {
+      "type": "object",
+      "description": "Response format config. Defines section labels and colors for structured responses. Auto-generates formatting instructions appended to the system prompt.",
+      "properties": {
+        "header_label": {
+          "type": "string",
+          "default": "STATUS",
+          "description": "Header section label (e.g. STATUS, CLASSIFICATION)"
+        },
+        "header_color": {
+          "type": "string",
+          "default": "1,0.8,0.2",
+          "description": "Header color as r,g,b floats (0-1)"
+        },
+        "action_label": {
+          "type": "string",
+          "default": "ACTIONS",
+          "description": "Actions section label"
+        },
+        "action_color": {
+          "type": "string",
+          "default": "0.6,0.8,1",
+          "description": "Actions section color"
+        },
+        "footer_label": {
+          "type": "string",
+          "description": "Optional footer section label"
+        },
+        "footer_color": {
+          "type": "string",
+          "default": "0.4,0.6,0.4",
+          "description": "Footer section color"
+        },
+        "sections": {
+          "type": "array",
+          "description": "Additional named data sections",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "Section label (e.g. INVENTORY, POSITION)"
+              },
+              "color": {
+                "type": "string",
+                "default": "0.5,0.7,0.5",
+                "description": "Section color as r,g,b"
+              },
+              "description": {
+                "type": "string",
+                "description": "What this section is for (used in prompt generation)"
+              }
+            },
+            "required": ["label"]
+          }
+        }
+      }
     }
   },
   "additionalProperties": false

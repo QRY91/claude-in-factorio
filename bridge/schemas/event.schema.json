@@ -32,7 +32,11 @@
           "title": "chat",
           "properties": {
             "role": { "type": "string", "enum": ["player", "agent"] },
-            "message": { "type": "string" }
+            "message": { "type": "string", "description": "Raw rich text message" },
+            "sections": {
+              "$ref": "response.schema.json",
+              "description": "Parsed response sections (present for role=agent when response has structured format)"
+            }
           },
           "required": ["role", "message"]
         },

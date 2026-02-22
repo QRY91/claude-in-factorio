@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -46,7 +47,8 @@ SESSIONS_FILE = _BRIDGE_DIR / ".sessions.json"
 # ── Agent profiles ───────────────────────────────────────────
 
 def load_agent(agent_name: str) -> dict:
-    """Load and validate agent profile from bridge/agents/{name}.json."""
+    """Load and validate agent profile from bridge/agents/{name}.json.
+    If response_format is present, auto-generates and appends format instructions."""
     agent_file = _BRIDGE_DIR / "agents" / f"{agent_name}.json"
     if not agent_file.exists():
         raise FileNotFoundError(
@@ -59,7 +61,98 @@ def load_agent(agent_name: str) -> dict:
         raise ValueError(f"Agent profile missing 'name': {agent_file}")
     if not isinstance(agent.get("system_prompt"), str) or not agent["system_prompt"]:
         raise ValueError(f"Agent profile missing 'system_prompt': {agent_file}")
+    # Auto-generate formatting instructions from response_format
+    fmt = agent.get("response_format")
+    if fmt:
+        instructions = build_format_instructions(fmt)
+        agent["system_prompt"] = agent["system_prompt"] + "\n\n" + instructions
     return agent
+
+
+# ── Response formatting ───────────────────────────────────────
+
+def build_format_instructions(fmt: dict) -> str:
+    """Generate system prompt formatting instructions from response_format config."""
+    header_label = fmt.get("header_label", "STATUS")
+    header_color = fmt.get("header_color", "1,0.8,0.2")
+    action_label = fmt.get("action_label", "ACTIONS")
+    action_color = fmt.get("action_color", "0.6,0.8,1")
+    footer_label = fmt.get("footer_label")
+    footer_color = fmt.get("footer_color", "0.4,0.6,0.4")
+    sections = fmt.get("sections", [])
+
+    lines = [
+        "Response format (follow this structure in every response):",
+        f"- First line: [color={header_color}]{header_label}:[/color] followed by a short classification",
+        "- Body: plain text paragraphs. Use [item=name] for items, [entity=name] for buildings.",
+        f"- If you took actions: [color={action_color}]{action_label}:[/color] followed by a bulleted list (- prefix)",
+    ]
+    for sec in sections:
+        color = sec.get("color", "0.5,0.7,0.5")
+        desc = sec.get("description", sec["label"].lower() + " data")
+        lines.append(f"- [color={color}]{sec['label']}:[/color] for {desc}")
+    if footer_label:
+        lines.append(f"- Last line: [color={footer_color}]{footer_label}:[/color] closing status")
+    lines.append("- No markdown (**, ##, ```). Use Factorio rich text tags only.")
+    return "\n".join(lines)
+
+
+# Matches [color=r,g,b]LABEL:[/color] section headers
+_SECTION_RE = re.compile(
+    r'\[color=([0-9.,]+)\]([A-Z][A-Z _]*?):\[/color\]\s*',
+)
+
+
+def parse_response(text: str) -> dict:
+    """Parse a rich-text agent response into structured sections.
+    Returns dict matching response.schema.json. Falls back to {"body": text}."""
+    matches = list(_SECTION_RE.finditer(text))
+    if not matches:
+        return {"body": text}
+
+    result = {}
+
+    # Extract section contents by splitting between matches
+    for i, m in enumerate(matches):
+        color = m.group(1)
+        label = m.group(2).strip()
+        content_start = m.end()
+        content_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        content = text[content_start:content_end].strip()
+
+        if i == 0:
+            # First section is header. Split: first line = header text, rest = body.
+            parts = content.split("\n\n", 1)
+            result["header"] = {"label": label, "color": color, "text": parts[0].strip()}
+            if len(parts) > 1 and parts[1].strip():
+                result["body"] = parts[1].strip()
+        elif "ACTION" in label.upper():
+            actions = []
+            for line in content.split("\n"):
+                line = line.strip().lstrip("- ").strip()
+                if line:
+                    actions.append(line)
+            if actions:
+                result["actions"] = actions
+        elif label.upper() in ("FILED", "CLASSIFIED", "END"):
+            result["footer"] = {"label": label, "color": color, "text": content}
+        else:
+            if "data" not in result:
+                result["data"] = {}
+            result["data"][label] = {"color": color, "text": content}
+
+    if "body" not in result:
+        result["body"] = result.get("header", {}).get("text", text)
+
+    return result
+
+
+def sanitize_response(text: str) -> str:
+    """Remove markdown artifacts while preserving Factorio rich text tags."""
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)           # **bold** -> bold
+    text = re.sub(r'^#{1,3}\s+', '', text, flags=re.MULTILINE)  # ## headers
+    text = re.sub(r'```\w*\n?', '', text)                   # code fences
+    return text.strip()
 
 
 # ── Session persistence ──────────────────────────────────────
@@ -163,10 +256,14 @@ def handle_message(
     player_index: int,
     telemetry: Telemetry | None,
     agent_name: str = "default",
+    telemetry_name: str | None = None,
     model: str | None = None,
     max_turns: int = 15,
 ) -> str | None:
-    """Pipe a message through claude CLI. Returns new session_id."""
+    """Pipe a message through claude CLI. Returns new session_id.
+    agent_name: registered agent name (for RCON/mod).
+    telemetry_name: display name for telemetry/logs (defaults to agent_name)."""
+    tname = telemetry_name or agent_name
     cmd = build_claude_cmd(prompt, mcp_config, system_prompt, session_id, model, max_turns)
 
     resume_tag = f" (resume {session_id[:8]}...)" if session_id else " (new session)"
@@ -219,7 +316,7 @@ def handle_message(
                     if len(input_summary) > 80:
                         input_summary = input_summary[:77] + "..."
                     print(f"  [{_ts()}] tool: {display}({input_summary})")
-                    emit_tool_call(telemetry, display, tool_input, agent=agent_name)
+                    emit_tool_call(telemetry, display, tool_input, agent=tname)
                     try:
                         send_tool_status(rcon, player_index, agent_name, display)
                     except Exception:
@@ -249,7 +346,7 @@ def handle_message(
                     "cost_usd": cost,
                     "turns": turns,
                     "duration_ms": duration,
-                }, agent=agent_name)
+                }, agent=tname)
 
     proc.wait()
 
@@ -258,17 +355,18 @@ def handle_message(
         if stderr and not text_parts:
             error_msg = f"Error: {stderr[:200]}"
             print(f"[Error] {stderr.strip()}")
-            emit_error(telemetry, error_msg, agent=agent_name)
+            emit_error(telemetry, error_msg, agent=tname)
             send_response(rcon, player_index, agent_name, error_msg)
             set_status(rcon, player_index, "[color=0.4,0.8,0.4]Ready[/color]")
             return new_session_id
 
     # Send response — join all text parts so intermediate messages aren't lost
     reply = "\n\n".join(text_parts) if text_parts else "(action complete)"
-    reply = reply.replace("**", "").replace("```", "").replace("##", "")
+    reply = sanitize_response(reply)
 
-    print(f"[{agent_name}] {reply}\n")
-    emit_chat(telemetry, "agent", reply, agent=agent_name)
+    print(f"[{tname}] {reply}\n")
+    sections = parse_response(reply)
+    emit_chat(telemetry, "agent", reply, agent=tname, sections=sections)
     send_response(rcon, player_index, agent_name, reply)
 
     return new_session_id
@@ -372,8 +470,8 @@ class AgentThread:
             new_session = handle_message(
                 message, self.mcp_config, self.system_prompt, self.session_id,
                 self.rcon, player_index, self.telemetry,
-                agent_name=self.telemetry_name, model=self.model,
-                max_turns=self.max_turns,
+                agent_name=self.agent_name, telemetry_name=self.telemetry_name,
+                model=self.model, max_turns=self.max_turns,
             )
             if new_session:
                 self.session_id = new_session
@@ -584,8 +682,8 @@ def main():
                 new_session = handle_message(
                     message, mcp_config, system_prompt, session_id,
                     rcon, player_index, telemetry,
-                    agent_name=telemetry_name, model=model,
-                    max_turns=max_turns,
+                    agent_name=agent_name, telemetry_name=telemetry_name,
+                    model=model, max_turns=max_turns,
                 )
                 if new_session:
                     session_id = new_session

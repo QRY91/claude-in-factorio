@@ -168,11 +168,15 @@ class Telemetry:
 # Telemetry helpers — all safe to call with telemetry=None
 
 def emit_chat(telemetry: Telemetry | None, role: str, message: str,
-              agent: str = "BORE-01", tick: int | None = None):
+              agent: str = "BORE-01", tick: int | None = None,
+              sections: dict | None = None):
     if telemetry:
+        data = {"role": role, "message": message}
+        if sections:
+            data["sections"] = sections
         telemetry.emit({
             "type": "chat",
-            "data": {"role": role, "message": message},
+            "data": data,
             "agent": agent, "tick": tick,
         })
 

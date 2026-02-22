@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "response.schema.json",
+  "title": "Agent Response Format",
+  "description": "Structured response format for agent replies. Agents output Factorio rich text following a section convention. pipe.py parses this into structured telemetry for dashboard consumers. The schema describes the parsed output, not the raw agent text.",
+  "type": "object",
+  "required": ["body"],
+  "properties": {
+    "header": {
+      "type": "object",
+      "description": "First section: classification or status line, rendered in a distinct color.",
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "Section label (e.g. STATUS, CLASSIFICATION)"
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^[0-9.]+,[0-9.]+,[0-9.]+$",
+          "description": "Factorio color as r,g,b floats (0-1)"
+        },
+        "text": {
+          "type": "string",
+          "description": "Header content text"
+        }
+      },
+      "required": ["label", "text"]
+    },
+    "body": {
+      "type": "string",
+      "description": "Main response text. May contain inline Factorio rich text tags ([item=name], [color=r,g,b], [entity=name])."
+    },
+    "actions": {
+      "type": "array",
+      "description": "Actions taken, each as a short summary line.",
+      "items": { "type": "string" }
+    },
+    "data": {
+      "type": "object",
+      "description": "Named data sections (inventory, position, resources). Keys are section labels, values are content.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "color": { "type": "string" },
+          "text": { "type": "string" }
+        },
+        "required": ["text"]
+      }
+    },
+    "footer": {
+      "type": "object",
+      "description": "Closing line (filing status, classification notice).",
+      "properties": {
+        "label": { "type": "string" },
+        "color": { "type": "string" },
+        "text": { "type": "string" }
+      },
+      "required": ["label", "text"]
+    }
+  }
+}
