@@ -307,10 +307,6 @@ end
 local function save_message(player_index, agent_name, role, text)
     ensure_agent_messages(player_index)
     local msgs = storage.messages[player_index][agent_name]
-    if not msgs then
-        storage.messages[player_index][agent_name] = {}
-        msgs = storage.messages[player_index][agent_name]
-    end
     table.insert(msgs, {
         role = role,
         text = text,

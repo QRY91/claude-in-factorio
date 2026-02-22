@@ -17,6 +17,9 @@ DATA="${2:?Usage: relay_push.sh <type> <json_data>}"
 AGENT="${3:-BORE-01}"
 TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%S)"
 
+if [ -z "$RELAY_URL" ]; then echo "Error: RELAY_URL not set (check bridge/.env)"; exit 1; fi
+if [ -z "$RELAY_TOKEN" ]; then echo "Error: RELAY_TOKEN not set (check bridge/.env)"; exit 1; fi
+
 curl -s -X POST "${RELAY_URL}/ingest" \
   -H "Authorization: Bearer ${RELAY_TOKEN}" \
   -H "Content-Type: application/json" \

@@ -39,26 +39,6 @@ def find_script_output() -> Path:
     )
 
 
-def find_factorioctl() -> str | None:
-    """Find the factorioctl binary. Returns None if not found."""
-    env_val = os.environ.get("FACTORIOCTL_BIN")
-    if env_val and os.path.isfile(env_val):
-        return env_val
-
-    search = Path.cwd()
-    while search != search.parent:
-        candidate = search / "factorioctl" / "target" / "release" / "factorioctl"
-        if candidate.is_file():
-            return str(candidate)
-        search = search.parent
-
-    found = shutil.which("factorioctl")
-    if found:
-        return found
-
-    return None
-
-
 def find_factorioctl_mcp() -> str | None:
     """Find the factorioctl MCP server binary."""
     env_val = os.environ.get("FACTORIOCTL_MCP_BIN")

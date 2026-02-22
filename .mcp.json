@@ -1,6 +1,7 @@
 {
   "mcpServers": {
     "factorioctl": {
+      "type": "stdio",
       "command": "./factorioctl/target/release/mcp",
       "args": [],
       "env": {

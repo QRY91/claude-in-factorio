@@ -179,14 +179,12 @@ python bridge/pipe.py
 ```
 claude-in-factorio/
 ├── bridge/
-│   ├── pipe.py             # Thin pipe: in-game GUI ↔ claude CLI
-│   ├── bridge.py           # Legacy bridge (API + SDK modes)
+│   ├── pipe.py             # Main entry point: in-game GUI ↔ claude CLI
 │   ├── rcon.py             # RCON protocol client
 │   ├── transport.py        # Mod IPC (file watcher, RCON responses)
 │   ├── telemetry.py        # SSE + relay telemetry
 │   ├── paths.py            # Auto-detect factorioctl and script-output
-│   ├── backend_api.py      # Legacy: direct Anthropic API mode
-│   ├── backend_sdk.py      # Legacy: Claude Code SDK mode
+│   ├── agents/             # Agent profiles (JSON)
 │   └── relay_push.sh       # Manual telemetry push helper
 ├── mod/claude-interface/    # Factorio mod (copy to mods dir)
 │   ├── control.lua
@@ -214,7 +212,7 @@ claude-in-factorio/
 
 **"Mod mismatch" when connecting** — Server and client must have the same mod version. Re-copy the mod and run `./start-server.sh --fresh`.
 
-**pipe.py can't find script-output** — Pass `--script-output /path/to/script-output/` or set `FACTORIO_SERVER_DATA` env var.
+**pipe.py can't find script-output** — Auto-detected from `.factorio-server-data/`. Set `FACTORIO_SERVER_DATA` env var or pass `--script-output /path/to/script-output/` to override.
 
 **Steam/Flatpak: mod not loading** — Flatpak can't follow symlinks. Always **copy**, don't symlink.
 

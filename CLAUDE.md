@@ -5,14 +5,12 @@
 ```
 claude-in-factorio/
 ├── bridge/               # Python bridge: in-game GUI ↔ claude CLI
-│   ├── pipe.py           # Main entry point (thin pipe)
+│   ├── pipe.py           # Main entry point
 │   ├── rcon.py           # RCON protocol client
 │   ├── transport.py      # File IPC + RCON responses
 │   ├── telemetry.py      # SSE + relay telemetry
 │   ├── paths.py          # Auto-detect paths
-│   ├── bridge.py         # Legacy entry point (API + SDK modes)
-│   ├── backend_api.py    # Legacy: direct Anthropic API
-│   └── backend_sdk.py    # Legacy: Claude Code SDK
+│   └── agents/           # Agent profiles (JSON)
 ├── mod/claude-interface/  # Factorio mod (in-game chat GUI)
 ├── relay/                # Cloudflare Worker for live telemetry
 ├── configs/              # Server and map-gen settings
@@ -45,15 +43,13 @@ tail -f logs/server.log      # View logs
 ## Running the Bridge
 
 ```bash
-# Recommended: thin pipe (claude CLI + factorioctl MCP)
 python bridge/pipe.py
 
 # With a specific model
 python bridge/pipe.py --model sonnet
 
-# Legacy modes (require API key in bridge/.env)
-python bridge/bridge.py --mode api
-python bridge/bridge.py --mode claude-code
+# With a named agent
+python bridge/pipe.py --agent doug
 ```
 
 Relay URL and token auto-load from `bridge/.env`.

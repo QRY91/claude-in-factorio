@@ -42,33 +42,12 @@ from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, Telemetry, 
 _BRIDGE_DIR = Path(__file__).resolve().parent
 SESSIONS_FILE = _BRIDGE_DIR / ".sessions.json"
 
-# Fallback system prompt when no agent profile exists
-_DEFAULT_SYSTEM_PROMPT = """\
-You are Claude, an AI agent embedded in a Factorio game. \
-The player is chatting with you through an in-game GUI panel.
-
-You have tools to observe and control the game: view the map, check inventory, \
-walk around, place buildings, mine resources, craft items, and more.
-
-Guidelines:
-- Keep text responses concise. They render in a game GUI with limited width.
-- Use short paragraphs. No markdown (no **, ##, ```, etc.) - plain text only.
-- Factorio rich text is OK: [color=r,g,b]text[/color], [item=iron-plate]
-- When asked to do something in-game, use your tools to do it.
-- When reporting game state, use tools to get actual data rather than guessing.
-- You can use multiple tools in sequence to accomplish complex tasks.
-- After taking actions, briefly summarize what you did.
-"""
-
-
 # ── Agent profiles ───────────────────────────────────────────
 
 def load_agent(agent_name: str) -> dict:
     """Load and validate agent profile from bridge/agents/{name}.json."""
     agent_file = _BRIDGE_DIR / "agents" / f"{agent_name}.json"
     if not agent_file.exists():
-        if agent_name == "default":
-            return {"name": "default", "system_prompt": _DEFAULT_SYSTEM_PROMPT}
         raise FileNotFoundError(
             f"Agent profile not found: {agent_file}\n"
             f"Create it or use --agent default"
