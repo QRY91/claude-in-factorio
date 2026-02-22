@@ -20,6 +20,7 @@ local function init_storage()
     storage.msg_counter = storage.msg_counter or 0
     storage.gui_size = storage.gui_size or {}
     storage.agents = storage.agents or {"default"}
+    storage.agent_labels = storage.agent_labels or {}
     storage.active_agent = storage.active_agent or {}
     storage._rcon_queue = storage._rcon_queue or {}
 end
@@ -130,12 +131,17 @@ local function find_tab_index(tabbed, agent_name)
     return nil
 end
 
+-- Get display label for a tab (short name or agent_name)
+local function get_agent_label(agent_name)
+    return storage.agent_labels[agent_name] or agent_name
+end
+
 -- Create a single agent tab + scroll-pane + chat_flow inside a tabbed-pane
 local function create_agent_tab(tabbed, player, agent_name)
     local tab = tabbed.add{
         type = "tab",
         name = "ci_tab_" .. agent_name,
-        caption = agent_name,
+        caption = get_agent_label(agent_name),
     }
 
     local scroll = tabbed.add{
@@ -343,8 +349,11 @@ local function add_chat_message(player, agent_name, role, text)
             local tab_idx = find_tab_index(tabbed, agent_name)
             if tab_idx then
                 local tab_obj = tabbed.tabs[tab_idx].tab
-                local current = tab_obj.badge_text or ""
-                local count = tonumber(current) or 0
+                local current = tab_obj.badge_text
+                local count = 0
+                if current and current ~= "" then
+                    count = tonumber(current) or 0
+                end
                 tab_obj.badge_text = tostring(count + 1)
             end
         end
@@ -399,7 +408,10 @@ local function agent_exists(name)
     return false
 end
 
-local function register_agent(agent_name)
+local function register_agent(agent_name, label)
+    if label then
+        storage.agent_labels[agent_name] = label
+    end
     if agent_exists(agent_name) then return end
     table.insert(storage.agents, agent_name)
 
@@ -486,7 +498,7 @@ local function process_rcon_queue()
                 set_status(player, item.text)
             end
         elseif item.type == "register" then
-            register_agent(item.agent)
+            register_agent(item.agent, item.label)
         elseif item.type == "unregister" then
             unregister_agent(item.agent)
         elseif item.type == "clear" then
@@ -550,9 +562,9 @@ remote.add_interface("claude_interface", {
         })
     end,
 
-    register_agent = function(agent_name)
+    register_agent = function(agent_name, label)
         table.insert(storage._rcon_queue, {
-            type = "register", agent = agent_name,
+            type = "register", agent = agent_name, label = label,
         })
     end,
 
@@ -632,7 +644,7 @@ script.on_event(defines.events.on_gui_selected_tab_changed, function(event)
     storage.active_agent[player.index] = agent_name
 
     -- Clear badge on newly selected tab
-    tab_obj.badge_text = nil
+    tab_obj.badge_text = ""
 end)
 
 -- Click handler

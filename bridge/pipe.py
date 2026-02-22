@@ -515,13 +515,15 @@ def main_multi(args, agent_profiles: list[dict]):
     mod_loaded = check_mod_loaded(rcon)
     if mod_loaded:
         print("claude-interface mod detected!")
-        # Unregister default, register group chat + all agents
-        unregister_agent(rcon, "default")
-        register_agent(rcon, "all")
+        # Register group chat + agents first, THEN remove default
+        # (unregister must happen after registers so safety check passes)
+        register_agent(rcon, "all", label="ALL")
         print(f"  Registered tab:   all (group chat)")
         for agent in agent_profiles:
-            register_agent(rcon, agent["name"])
-            print(f"  Registered agent: {agent['name']}")
+            label = agent.get("planet", agent["name"]).capitalize()
+            register_agent(rcon, agent["name"], label=label)
+            print(f"  Registered agent: {agent['name']} [{label}]")
+        unregister_agent(rcon, "default")
     else:
         print("WARNING: claude-interface mod not detected.")
 

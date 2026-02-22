@@ -26,9 +26,13 @@ def set_status(rcon: RCONClient, player_index: int, status: str):
     rcon.execute(lua)
 
 
-def register_agent(rcon: RCONClient, agent_name: str):
+def register_agent(rcon: RCONClient, agent_name: str, label: str | None = None):
     encoded = lua_long_string(agent_name)
-    lua = f'/silent-command remote.call("claude_interface", "register_agent", {encoded})'
+    if label:
+        label_encoded = lua_long_string(label)
+        lua = f'/silent-command remote.call("claude_interface", "register_agent", {encoded}, {label_encoded})'
+    else:
+        lua = f'/silent-command remote.call("claude_interface", "register_agent", {encoded})'
     rcon.execute(lua)
 
 
