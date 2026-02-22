@@ -331,10 +331,12 @@ def handle_message(
                         input_summary = input_summary[:77] + "..."
                     print(f"  [{_ts()}] tool: {display}({input_summary})")
                     emit_tool_call(telemetry, display, tool_input, agent=tname)
-                    try:
-                        send_tool_status(rcon, player_index, rcon_target, display)
-                    except Exception:
-                        pass
+                    # Skip sending non-factorioctl tools to the game UI
+                    if not tool_name.startswith("mcp__") or tool_name.startswith("mcp__factorioctl__"):
+                        try:
+                            send_tool_status(rcon, player_index, rcon_target, display)
+                        except Exception:
+                            pass
 
         elif msg_type == "tool_result":
             # Tool execution result

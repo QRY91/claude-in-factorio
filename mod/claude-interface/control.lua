@@ -21,6 +21,7 @@ local function init_storage()
     storage.gui_size = storage.gui_size or {}
     storage.agents = storage.agents or {"default"}
     storage.active_agent = storage.active_agent or {}
+    storage._rcon_queue = storage._rcon_queue or {}
 end
 
 local function get_size(player_index)
@@ -456,66 +457,109 @@ local function unregister_agent(agent_name)
 end
 
 -- ============================================================
+-- Queue Processing (on_tick)
+-- ============================================================
+
+-- Process queued RCON commands deterministically in on_tick.
+-- This prevents desync in multiplayer: RCON pushes to queue,
+-- on_tick processes it identically on server and all clients.
+local function process_rcon_queue()
+    if not storage._rcon_queue or #storage._rcon_queue == 0 then return end
+    local queue = storage._rcon_queue
+    storage._rcon_queue = {}
+    for _, item in ipairs(queue) do
+        if item.type == "response" then
+            local player = game.get_player(item.pi)
+            if player then
+                add_chat_message(player, item.agent, "claude", item.text)
+                set_status(player, "[color=0.4,0.8,0.4]Ready[/color]")
+            end
+        elseif item.type == "tool" then
+            local player = game.get_player(item.pi)
+            if player then
+                add_chat_message(player, item.agent, "tool", item.tool)
+                set_status(player, "[color=0.6,0.7,1]Using " .. item.tool .. "...[/color]")
+            end
+        elseif item.type == "status" then
+            local player = game.get_player(item.pi)
+            if player then
+                set_status(player, item.text)
+            end
+        elseif item.type == "register" then
+            register_agent(item.agent)
+        elseif item.type == "unregister" then
+            unregister_agent(item.agent)
+        elseif item.type == "clear" then
+            local player = game.get_player(item.pi)
+            if player then
+                if item.agent then
+                    if storage.messages[item.pi] then
+                        storage.messages[item.pi][item.agent] = {}
+                    end
+                    local frame = player.gui.screen[GUI_FRAME]
+                    if frame and frame.valid then
+                        local chat_flow = get_agent_chat_flow(frame, item.agent)
+                        if chat_flow then chat_flow.clear() end
+                    end
+                else
+                    storage.messages[item.pi] = {}
+                    ensure_agent_messages(item.pi)
+                    local frame = player.gui.screen[GUI_FRAME]
+                    if frame and frame.valid then
+                        for _, a in ipairs(storage.agents) do
+                            local chat_flow = get_agent_chat_flow(frame, a)
+                            if chat_flow then chat_flow.clear() end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- ============================================================
 -- Remote Interface (called by bridge via RCON)
+-- All state-modifying operations push to _rcon_queue for
+-- deterministic processing in on_tick (prevents MP desync).
 -- ============================================================
 
 remote.add_interface("claude_interface", {
     receive_response = function(player_index, agent_name, text)
-        local player = game.get_player(player_index)
-        if not player then return end
-        agent_name = agent_name or "default"
-        add_chat_message(player, agent_name, "claude", text)
-        set_status(player, "[color=0.4,0.8,0.4]Ready[/color]")
+        table.insert(storage._rcon_queue, {
+            type = "response", pi = player_index,
+            agent = agent_name or "default", text = text,
+        })
     end,
 
-    -- Show tool use in chat
     tool_status = function(player_index, agent_name, tool_name)
-        local player = game.get_player(player_index)
-        if not player then return end
-        agent_name = agent_name or "default"
-        add_chat_message(player, agent_name, "tool", tool_name)
-        set_status(player, "[color=0.6,0.7,1]Using " .. tool_name .. "...[/color]")
+        table.insert(storage._rcon_queue, {
+            type = "tool", pi = player_index,
+            agent = agent_name or "default", tool = tool_name,
+        })
     end,
 
     set_status = function(player_index, status_text)
-        local player = game.get_player(player_index)
-        if not player then return end
-        set_status(player, status_text)
+        table.insert(storage._rcon_queue, {
+            type = "status", pi = player_index, text = status_text,
+        })
     end,
 
     clear_chat = function(player_index, agent_name)
-        local player = game.get_player(player_index)
-        if not player then return end
-        if agent_name then
-            -- Clear specific agent's chat
-            if storage.messages[player_index] then
-                storage.messages[player_index][agent_name] = {}
-            end
-            local frame = player.gui.screen[GUI_FRAME]
-            if frame and frame.valid then
-                local chat_flow = get_agent_chat_flow(frame, agent_name)
-                if chat_flow then chat_flow.clear() end
-            end
-        else
-            -- Clear all agents' chats
-            storage.messages[player_index] = {}
-            ensure_agent_messages(player_index)
-            local frame = player.gui.screen[GUI_FRAME]
-            if frame and frame.valid then
-                for _, a in ipairs(storage.agents) do
-                    local chat_flow = get_agent_chat_flow(frame, a)
-                    if chat_flow then chat_flow.clear() end
-                end
-            end
-        end
+        table.insert(storage._rcon_queue, {
+            type = "clear", pi = player_index, agent = agent_name,
+        })
     end,
 
     register_agent = function(agent_name)
-        register_agent(agent_name)
+        table.insert(storage._rcon_queue, {
+            type = "register", agent = agent_name,
+        })
     end,
 
     unregister_agent = function(agent_name)
-        unregister_agent(agent_name)
+        table.insert(storage._rcon_queue, {
+            type = "unregister", agent = agent_name,
+        })
     end,
 
     ping = function()
@@ -528,6 +572,9 @@ remote.add_interface("claude_interface", {
 -- ============================================================
 
 script.on_init(init_storage)
+
+-- Process RCON queue every tick (only does work when queue is non-empty)
+script.on_event(defines.events.on_tick, process_rcon_queue)
 
 script.on_configuration_changed(function(data)
     -- Migrate old flat messages to per-agent structure
