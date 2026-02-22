@@ -8,19 +8,17 @@ Talk to Claude AI directly from inside Factorio. Ask questions, get help with yo
 
 ## Quick Start
 
-Already set up? Here's how to get a game running:
-
 ```bash
 # 1. Start the headless server
 ./start-server.sh
 
-# 2. Start the bridge (claude-code mode with relay telemetry)
-python bridge/bridge.py --mode claude-code
+# 2. Start the bridge (pipes in-game GUI to Claude)
+python bridge/pipe.py
 
-# 3. Open Factorio via Steam → Multiplayer → Connect to: localhost:34197
+# 3. Open Factorio → Multiplayer → Connect to: localhost:34197
 ```
 
-In-game: press **Ctrl+Shift+C** or click the **Q button** in the shortcut bar (bottom-right). Type a message and hit Enter.
+In-game: press **Ctrl+Shift+C** or click the **Q button** in the shortcut bar. Type a message and hit Enter.
 
 To reset to a fresh world:
 ```bash
@@ -28,32 +26,41 @@ To reset to a fresh world:
 ./start-server.sh --fresh
 ```
 
-To stop:
-```bash
-./stop-server.sh
-```
-
 ## How It Works
 
+Two ways to play — through the in-game GUI, or directly from a terminal.
+
+### In-game GUI (pipe.py)
+
 ```
-┌─────────────┐    file write     ┌─────────────┐   Claude Code SDK  ┌─────────┐
-│  Factorio   │ ───────────────── │   Bridge    │ ─────────────────  │  Claude │
-│  Mod (Lua)  │                   │  (Python)   │   (MCP tools)      │         │
-│             │ ◄──────────────── │             │ ◄─────────────────  │         │
-└─────────────┘    RCON command   └─────────────┘   tool results     └─────────┘
-                                        │
-                                        ▼ (optional)
-                                  ┌─────────────┐
-                                  │ Relay (SSE) │ → Live dashboard
-                                  └─────────────┘
+┌─────────────┐   file write   ┌─────────────┐   claude -p    ┌─────────┐
+│  Factorio   │ ──────────────▸ │  pipe.py    │ ─────────────▸ │  Claude │
+│  Mod (Lua)  │                 │  (bridge)   │   + MCP tools  │  Code   │
+│             │ ◂────────────── │             │ ◂───────────── │         │
+└─────────────┘   RCON command  └─────────────┘  tool results  └─────────┘
+                                      │
+                                      ▼ (optional)
+                                ┌─────────────┐
+                                │   Relay     │ → Live dashboard
+                                └─────────────┘
 ```
 
 1. **You type** in the in-game chat panel
 2. **Mod** writes your message to a JSONL file
-3. **Bridge** picks it up, sends it to Claude with 40+ game tools
+3. **pipe.py** pipes it to `claude -p` with 40+ factorioctl MCP tools
 4. **Claude** responds and uses tools (walk, build, mine, craft, survey...)
-5. **Bridge** sends the response back via RCON
+5. **pipe.py** sends the response back via RCON
 6. **Mod** displays it in the chat panel
+
+Session state is preserved between messages — Claude remembers the conversation.
+
+### Direct terminal (Claude Code)
+
+You can also just open Claude Code in this repo and talk to Factorio directly. The `.mcp.json` gives Claude all factorioctl tools automatically.
+
+```bash
+claude   # Claude Code has factorioctl tools via .mcp.json
+```
 
 ## Setup
 
@@ -61,11 +68,8 @@ To stop:
 
 - **Factorio 2.0** (Steam, with or without Space Age DLC)
 - **Python 3.10+**
-- **Rust toolchain** (for factorioctl) — install via [rustup.rs](https://rustup.rs/)
-- **Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com)
-
-For Claude Code mode (recommended):
 - **Claude Code CLI** — `npm install -g @anthropic-ai/claude-code`
+- **Rust toolchain** (for factorioctl) — install via [rustup.rs](https://rustup.rs/)
 
 ### 1. Clone and build
 
@@ -73,21 +77,20 @@ For Claude Code mode (recommended):
 git clone https://github.com/QRY91/claude-in-factorio.git
 cd claude-in-factorio
 
-# Build factorioctl (game tool access)
+# Build factorioctl (game control MCP server)
 git clone https://github.com/MarkMcCaskey/factorioctl.git
 cd factorioctl && cargo build --release && cd ..
-
-# Install Python dependencies
-pip install -r bridge/requirements.txt
-
-# Set up your API key
-cp bridge/.env.example bridge/.env
-# Edit bridge/.env → add your ANTHROPIC_API_KEY
 ```
 
 ### 2. Install the mod
 
-Copy `mod/claude-interface/` into your Factorio mods directory:
+Run the installer (auto-detects Factorio mods directory):
+
+```bash
+./install.sh
+```
+
+Or copy manually:
 
 ```bash
 # Linux (Steam/Flatpak) — must copy, not symlink
@@ -98,9 +101,6 @@ cp -r mod/claude-interface ~/.factorio/mods/
 
 # macOS
 cp -r mod/claude-interface ~/Library/Application\ Support/factorio/mods/
-
-# Windows
-xcopy /E mod\claude-interface "%APPDATA%\Factorio\mods\claude-interface\"
 ```
 
 If running a dedicated server, also install the mod on the server's mods directory.
@@ -118,35 +118,37 @@ Default RCON settings (localhost:27015, password "factorio") work out of the box
 ### 4. Run
 
 ```bash
-# Start the Factorio server
 ./start-server.sh
-
-# Start the bridge
-python bridge/bridge.py --mode claude-code
-
+python bridge/pipe.py
 # Connect from Steam: Multiplayer → Connect to address → localhost:34197
 ```
 
-## Modes
+## Options
 
-| | API mode | Claude Code mode (recommended) |
-|---|---|---|
-| Command | `--mode api` | `--mode claude-code` |
-| Tools | 12 hand-defined | 40+ via MCP (automatic) |
-| Includes | Walk, build, mine, craft, map | Everything + belt routing, power analysis, zones, inserters, ... |
-| Requires | API key + factorioctl CLI | API key + Claude Code CLI + factorioctl MCP |
-| Conversation | In-bridge memory | Session resume via Claude Code |
+```
+python bridge/pipe.py --help
 
-Claude Code mode uses factorioctl as an [MCP server](https://modelcontextprotocol.io/), so every tool it exposes is automatically available.
+  --rcon-host        RCON host (default: localhost)
+  --rcon-port        RCON port (default: 27015)
+  --rcon-password    RCON password (default: factorio)
+  --model            Claude model (e.g. sonnet, opus, haiku)
+  --max-turns        Max tool-use turns per message (default: 15)
+  --poll-interval    Seconds between file polls (default: 0.5)
+  --factorioctl-mcp  Path to factorioctl MCP binary
+  --sse              Enable local SSE telemetry server
+  --sse-port         SSE server port (default: 8088)
+  --relay            Remote relay URL (or set RELAY_URL in bridge/.env)
+  --relay-token      Relay auth token (or set RELAY_TOKEN in bridge/.env)
+```
 
 ## Live Telemetry (optional)
 
-The bridge can stream events to a remote dashboard for live monitoring.
+Stream agent activity to a dashboard for live monitoring.
 
 **Local SSE** (for development):
 ```bash
-python bridge/bridge.py --mode claude-code --sse
-# Dashboard at http://localhost:8088/events
+python bridge/pipe.py --sse
+# Events at http://localhost:8088/events
 ```
 
 **Remote relay** (for public dashboards):
@@ -159,29 +161,8 @@ npx wrangler secret put RELAY_TOKEN
 RELAY_URL=https://your-relay.workers.dev
 RELAY_TOKEN=your-secret-token
 
-# Bridge auto-connects to relay from .env
-python bridge/bridge.py --mode claude-code
-```
-
-See `relay/` for the Cloudflare Worker source.
-
-## Options
-
-```
-python bridge/bridge.py --help
-
-  --mode            api or claude-code (default: api)
-  --rcon-host       RCON host (default: localhost)
-  --rcon-port       RCON port (default: 27015)
-  --rcon-password   RCON password (default: factorio)
-  --model           Claude model
-  --poll-interval   Seconds between file polls (default: 0.5)
-  --factorioctl     Path to factorioctl binary (api mode)
-  --factorioctl-mcp Path to factorioctl MCP binary (claude-code mode)
-  --sse             Enable local SSE telemetry server
-  --sse-port        SSE server port (default: 8088)
-  --relay           Remote relay URL (or set RELAY_URL in .env)
-  --relay-token     Relay auth token (or set RELAY_TOKEN in .env)
+# pipe.py auto-connects to relay from .env
+python bridge/pipe.py
 ```
 
 ## GUI Controls
@@ -198,44 +179,50 @@ python bridge/bridge.py --help
 ```
 claude-in-factorio/
 ├── bridge/
-│   ├── bridge.py           # Bridge daemon (api + claude-code modes)
-│   ├── requirements.txt    # Python dependencies
-│   └── .env.example        # Config template
-├── mod/claude-interface/   # Factorio mod (copy to mods dir)
-│   ├── info.json
-│   ├── data.lua
+│   ├── pipe.py             # Thin pipe: in-game GUI ↔ claude CLI
+│   ├── bridge.py           # Legacy bridge (API + SDK modes)
+│   ├── rcon.py             # RCON protocol client
+│   ├── transport.py        # Mod IPC (file watcher, RCON responses)
+│   ├── telemetry.py        # SSE + relay telemetry
+│   ├── paths.py            # Auto-detect factorioctl and script-output
+│   ├── backend_api.py      # Legacy: direct Anthropic API mode
+│   ├── backend_sdk.py      # Legacy: Claude Code SDK mode
+│   └── relay_push.sh       # Manual telemetry push helper
+├── mod/claude-interface/    # Factorio mod (copy to mods dir)
 │   ├── control.lua
-│   └── graphics/          # Shortcut bar icon
-├── relay/                  # Cloudflare Worker for live telemetry
+│   ├── data.lua
+│   ├── info.json
+│   └── graphics/
+├── relay/                   # Cloudflare Worker for live telemetry
 │   ├── src/index.ts
 │   └── wrangler.toml
-├── configs/                # Server and map-gen settings
-├── start-server.sh         # Start headless Factorio with RCON
-├── stop-server.sh          # Stop headless server
-├── factorioctl/            # Clone separately (gitignored)
-├── CLAUDE.md               # Claude Code project instructions
-└── .mcp.json               # MCP server config for Claude Code
+├── configs/                 # Server and map-gen settings
+├── factorioctl/             # Clone separately (gitignored)
+├── start-server.sh
+├── stop-server.sh
+├── .mcp.json                # MCP config for direct Claude Code use
+└── CLAUDE.md                # Claude Code project instructions
 ```
 
 ## Troubleshooting
 
-**"Thinking..." but no response** — Check that the bridge is running. Look at bridge terminal output.
+**"Thinking..." but no response** — Check that pipe.py is running. Look at its terminal output.
 
 **RCON connection refused** — Server not running or wrong port. Run `./start-server.sh` and check `logs/server.log`.
 
 **Mod not showing up** — Copy the entire `claude-interface/` directory into `mods/`. Restart Factorio.
 
-**"Mod mismatch" when connecting** — The server and client must have the same mod version. Re-copy the mod to both your Steam mods directory *and* the server, then run `./start-server.sh --fresh` to create a new save with the updated mod.
+**"Mod mismatch" when connecting** — Server and client must have the same mod version. Re-copy the mod and run `./start-server.sh --fresh`.
 
-**Bridge can't find script-output** — Pass `--script-output /path/to/script-output/` or set `FACTORIO_SERVER_DATA` env var.
+**pipe.py can't find script-output** — Pass `--script-output /path/to/script-output/` or set `FACTORIO_SERVER_DATA` env var.
 
 **Steam/Flatpak: mod not loading** — Flatpak can't follow symlinks. Always **copy**, don't symlink.
 
-**Claude Code mode: "claude CLI not found"** — `npm install -g @anthropic-ai/claude-code`
+**"claude CLI not found"** — `npm install -g @anthropic-ai/claude-code`
 
 **factorioctl build fails** — Need Rust toolchain ([rustup.rs](https://rustup.rs/)). Linux may need `pkg-config` and `libssl-dev`.
 
-**Bridge can't find factorioctl** — Clone it inside this repo: `git clone https://github.com/MarkMcCaskey/factorioctl.git` — the bridge searches for it automatically.
+**Can't find factorioctl** — Clone it inside this repo: `git clone https://github.com/MarkMcCaskey/factorioctl.git`
 
 ## License
 

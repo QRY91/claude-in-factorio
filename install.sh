@@ -76,27 +76,21 @@ with open('$MOD_LIST', 'w') as f:
 "
 fi
 
-# ── Install Python dependencies ─────────────────────────────
-
-echo ""
-echo "Installing Python dependencies..."
-pip install -q -r "$SCRIPT_DIR/bridge/requirements.txt"
-
-# ── Set up .env ─────────────────────────────────────────────
+# ── Set up .env (for optional telemetry relay) ──────────────
 
 ENV_FILE="$SCRIPT_DIR/bridge/.env"
 if [ ! -f "$ENV_FILE" ]; then
     cp "$SCRIPT_DIR/bridge/.env.example" "$ENV_FILE"
     echo ""
-    echo "Created bridge/.env — add your API key:"
-    echo "  ANTHROPIC_API_KEY=sk-ant-..."
+    echo "Created bridge/.env (optional — for telemetry relay config)"
 fi
 
 # ── Done ────────────────────────────────────────────────────
 
 echo ""
 echo "Done! Next steps:"
-echo "  1. Add your API key to bridge/.env"
-echo "  2. Restart Factorio (enable the mod if prompted)"
-echo "  3. Start the bridge:  python bridge/bridge.py"
-echo "  4. In game: Ctrl+Shift+C or click the AI button"
+echo "  1. Restart Factorio (enable the mod if prompted)"
+echo "  2. Start the server:  ./start-server.sh"
+echo "  3. Start the bridge:  python bridge/pipe.py"
+echo "  4. Connect: Multiplayer → localhost:34197"
+echo "  5. In game: Ctrl+Shift+C or click the Q button"

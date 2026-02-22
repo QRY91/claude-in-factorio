@@ -4,13 +4,22 @@
 
 ```
 claude-in-factorio/
-├── bridge/               # Python bridge (API + Claude Code SDK modes)
+├── bridge/               # Python bridge: in-game GUI ↔ claude CLI
+│   ├── pipe.py           # Main entry point (thin pipe)
+│   ├── rcon.py           # RCON protocol client
+│   ├── transport.py      # File IPC + RCON responses
+│   ├── telemetry.py      # SSE + relay telemetry
+│   ├── paths.py          # Auto-detect paths
+│   ├── bridge.py         # Legacy entry point (API + SDK modes)
+│   ├── backend_api.py    # Legacy: direct Anthropic API
+│   └── backend_sdk.py    # Legacy: Claude Code SDK
 ├── mod/claude-interface/  # Factorio mod (in-game chat GUI)
 ├── relay/                # Cloudflare Worker for live telemetry
 ├── configs/              # Server and map-gen settings
 ├── factorioctl/          # Cloned MCP server + CLI (git clone separately)
 ├── start-server.sh       # Start headless Factorio server with RCON
 ├── stop-server.sh        # Stop headless server
+├── .mcp.json             # MCP config for direct Claude Code use
 ├── .factorio-server/     # Headless server config (gitignored)
 ├── .factorio-server-data/ # Server write data (gitignored)
 ├── saves/                # Map save files (gitignored)
@@ -20,17 +29,11 @@ claude-in-factorio/
 ## Server Management
 
 ```bash
-# Start the headless server (RCON on port 27015)
-./start-server.sh
-
-# Stop the server
-./stop-server.sh
-
-# Check if running
-pgrep -f "factorio.*--start-server"
-
-# View server logs
-tail -f logs/server.log
+./start-server.sh            # Start headless (RCON on 27015)
+./stop-server.sh             # Stop server
+./start-server.sh --fresh    # Fresh world
+pgrep -f "factorio.*--start-server"  # Check if running
+tail -f logs/server.log      # View logs
 ```
 
 ### Connection Details
@@ -42,14 +45,15 @@ tail -f logs/server.log
 ## Running the Bridge
 
 ```bash
-# Claude Code mode (recommended — all 40+ tools via MCP)
-python bridge/bridge.py --mode claude-code
+# Recommended: thin pipe (claude CLI + factorioctl MCP)
+python bridge/pipe.py
 
-# API mode (12 hand-defined tools, direct Anthropic API)
+# With a specific model
+python bridge/pipe.py --model sonnet
+
+# Legacy modes (require API key in bridge/.env)
 python bridge/bridge.py --mode api
-
-# With live telemetry to relay
-python bridge/bridge.py --mode claude-code --relay https://bore-relay.qry-7e9.workers.dev
+python bridge/bridge.py --mode claude-code
 ```
 
 Relay URL and token auto-load from `bridge/.env`.
