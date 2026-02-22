@@ -6,21 +6,29 @@ from pathlib import Path
 from rcon import RCONClient, lua_long_string
 
 
-def send_response(rcon: RCONClient, player_index: int, text: str):
+def send_response(rcon: RCONClient, player_index: int, agent_name: str, text: str):
     encoded = lua_long_string(text)
-    lua = f'/silent-command remote.call("claude_interface", "receive_response", {player_index}, {encoded})'
+    agent_encoded = lua_long_string(agent_name)
+    lua = f'/silent-command remote.call("claude_interface", "receive_response", {player_index}, {agent_encoded}, {encoded})'
     rcon.execute(lua)
 
 
-def send_tool_status(rcon: RCONClient, player_index: int, tool_name: str):
+def send_tool_status(rcon: RCONClient, player_index: int, agent_name: str, tool_name: str):
+    agent_encoded = lua_long_string(agent_name)
     encoded = lua_long_string(tool_name)
-    lua = f'/silent-command remote.call("claude_interface", "tool_status", {player_index}, {encoded})'
+    lua = f'/silent-command remote.call("claude_interface", "tool_status", {player_index}, {agent_encoded}, {encoded})'
     rcon.execute(lua)
 
 
 def set_status(rcon: RCONClient, player_index: int, status: str):
     encoded = lua_long_string(status)
     lua = f'/silent-command remote.call("claude_interface", "set_status", {player_index}, {encoded})'
+    rcon.execute(lua)
+
+
+def register_agent(rcon: RCONClient, agent_name: str):
+    encoded = lua_long_string(agent_name)
+    lua = f'/silent-command remote.call("claude_interface", "register_agent", {encoded})'
     rcon.execute(lua)
 
 

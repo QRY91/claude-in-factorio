@@ -36,7 +36,7 @@ if _env_file.exists():
 
 from rcon import RCONClient
 from paths import find_script_output, find_factorioctl_mcp
-from transport import InputWatcher, send_response, send_tool_status, set_status, check_mod_loaded
+from transport import InputWatcher, send_response, send_tool_status, set_status, check_mod_loaded, register_agent
 from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, Telemetry, emit_chat, emit_tool_call, emit_error, emit_status
 
 _BRIDGE_DIR = Path(__file__).resolve().parent
@@ -196,7 +196,7 @@ def handle_message(
         )
     except FileNotFoundError:
         print("[Error] 'claude' CLI not found. Install: npm install -g @anthropic-ai/claude-code")
-        send_response(rcon, player_index, "Error: claude CLI not installed")
+        send_response(rcon, player_index, agent_name, "Error: claude CLI not installed")
         return session_id
 
     text_parts = []
@@ -234,7 +234,7 @@ def handle_message(
                     print(f"  [{_ts()}] tool: {display}({input_summary})")
                     emit_tool_call(telemetry, display, tool_input, agent=agent_name)
                     try:
-                        send_tool_status(rcon, player_index, display)
+                        send_tool_status(rcon, player_index, agent_name, display)
                     except Exception:
                         pass
 
@@ -272,7 +272,7 @@ def handle_message(
             error_msg = f"Error: {stderr[:200]}"
             print(f"[Error] {stderr.strip()}")
             emit_error(telemetry, error_msg, agent=agent_name)
-            send_response(rcon, player_index, error_msg)
+            send_response(rcon, player_index, agent_name, error_msg)
             set_status(rcon, player_index, "[color=0.4,0.8,0.4]Ready[/color]")
             return new_session_id
 
@@ -282,7 +282,7 @@ def handle_message(
 
     print(f"[{agent_name}] {reply}\n")
     emit_chat(telemetry, "agent", reply, agent=agent_name)
-    send_response(rcon, player_index, reply)
+    send_response(rcon, player_index, agent_name, reply)
 
     return new_session_id
 
@@ -381,6 +381,8 @@ def main():
     print("RCON connected!")
     if check_mod_loaded(rcon):
         print("claude-interface mod detected!")
+        register_agent(rcon, agent_name)
+        print(f"  Registered agent: {agent_name}")
     else:
         print("WARNING: claude-interface mod not detected.")
 
@@ -405,11 +407,15 @@ def main():
             time.sleep(args.poll_interval)
 
             for msg in watcher.poll():
+                target = msg.get("target_agent", "default")
+                if target != agent_name:
+                    continue
+
                 player_index = msg.get("player_index", 1)
                 player_name = msg.get("player_name", "Player")
                 message = msg["message"]
 
-                print(f"[{player_name}] {message}")
+                print(f"[{player_name} -> {agent_name}] {message}")
                 emit_chat(telemetry, "player", message, agent=telemetry_name)
 
                 try:
@@ -418,7 +424,7 @@ def main():
                     pass
 
                 if not mcp_config:
-                    send_response(rcon, player_index, "Error: factorioctl MCP not found")
+                    send_response(rcon, player_index, agent_name, "Error: factorioctl MCP not found")
                     continue
 
                 new_session = handle_message(

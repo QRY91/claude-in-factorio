@@ -1,5 +1,5 @@
--- Claude Interface - In-game chat with Claude AI
--- Communication: write_file -> bridge daemon -> Claude API -> RCON -> remote interface
+-- Claude Interface - In-game chat with Claude AI (multi-agent)
+-- Communication: write_file -> bridge daemon -> Claude CLI -> RCON -> remote interface
 
 local GUI_FRAME = "claude_interface_frame"
 local MAX_MESSAGES = 100
@@ -19,12 +19,38 @@ local function init_storage()
     storage.messages = storage.messages or {}
     storage.msg_counter = storage.msg_counter or 0
     storage.gui_size = storage.gui_size or {}
+    storage.agents = storage.agents or {"default"}
+    storage.active_agent = storage.active_agent or {}
 end
 
 local function get_size(player_index)
     if not storage.gui_size then storage.gui_size = {} end
     local idx = storage.gui_size[player_index] or 2
     return SIZES[idx], idx
+end
+
+-- Ensure per-agent message tables exist for a player
+local function ensure_agent_messages(player_index)
+    if not storage.messages[player_index] then
+        storage.messages[player_index] = {}
+    end
+    for _, agent_name in ipairs(storage.agents) do
+        if not storage.messages[player_index][agent_name] then
+            storage.messages[player_index][agent_name] = {}
+        end
+    end
+end
+
+-- Get the active agent for a player (defaults to first registered)
+local function get_active_agent(player_index)
+    local agent = storage.active_agent[player_index]
+    if agent then
+        -- Verify agent still exists
+        for _, a in ipairs(storage.agents) do
+            if a == agent then return agent end
+        end
+    end
+    return storage.agents[1] or "default"
 end
 
 -- ============================================================
@@ -61,8 +87,9 @@ local function add_message_label(chat_flow, role, text)
     return label
 end
 
-local function restore_chat(player, chat_flow)
-    local msgs = storage.messages[player.index]
+local function restore_chat(player, chat_flow, agent_name)
+    ensure_agent_messages(player.index)
+    local msgs = storage.messages[player.index][agent_name]
     if not msgs then return end
     for _, msg in ipairs(msgs) do
         add_message_label(chat_flow, msg.role, msg.text)
@@ -74,10 +101,72 @@ local function apply_size(frame, size)
     frame.style.height = size.h
 end
 
+-- Get the chat_flow for a specific agent tab
+local function get_agent_chat_flow(frame, agent_name)
+    if not frame or not frame.valid then return nil end
+    local tabbed = frame["ci_agent_tabs"]
+    if not tabbed then return nil end
+    local scroll = tabbed["ci_scroll_" .. agent_name]
+    if not scroll then return nil end
+    return scroll["ci_chat_" .. agent_name]
+end
+
+-- Get the scroll-pane for a specific agent tab
+local function get_agent_scroll(frame, agent_name)
+    if not frame or not frame.valid then return nil end
+    local tabbed = frame["ci_agent_tabs"]
+    if not tabbed then return nil end
+    return tabbed["ci_scroll_" .. agent_name]
+end
+
+-- Find the tab index for a given agent name
+local function find_tab_index(tabbed, agent_name)
+    for i, tab_and_content in ipairs(tabbed.tabs) do
+        if tab_and_content.tab.name == "ci_tab_" .. agent_name then
+            return i
+        end
+    end
+    return nil
+end
+
+-- Create a single agent tab + scroll-pane + chat_flow inside a tabbed-pane
+local function create_agent_tab(tabbed, player, agent_name)
+    local tab = tabbed.add{
+        type = "tab",
+        name = "ci_tab_" .. agent_name,
+        caption = agent_name,
+    }
+
+    local scroll = tabbed.add{
+        type = "scroll-pane",
+        name = "ci_scroll_" .. agent_name,
+        direction = "vertical",
+    }
+    scroll.style.vertically_stretchable = true
+    scroll.style.horizontally_stretchable = true
+
+    local chat_flow = scroll.add{
+        type = "flow",
+        name = "ci_chat_" .. agent_name,
+        direction = "vertical",
+    }
+    chat_flow.style.vertical_spacing = 6
+    chat_flow.style.horizontally_stretchable = true
+
+    tabbed.add_tab(tab, scroll)
+
+    -- Restore history for this agent
+    restore_chat(player, chat_flow, agent_name)
+    scroll.scroll_to_bottom()
+
+    return tab, scroll
+end
+
 local function create_gui(player)
     if player.gui.screen[GUI_FRAME] then return end
 
     local size, _ = get_size(player.index)
+    ensure_agent_messages(player.index)
 
     -- Main frame
     local frame = player.gui.screen.add{
@@ -137,22 +226,27 @@ local function create_gui(player)
         tooltip = "Close [Ctrl+Shift+C]"
     }
 
-    -- Chat scroll area
-    local scroll = frame.add{
-        type = "scroll-pane",
-        name = "ci_chat_scroll",
-        direction = "vertical"
+    -- Tabbed pane for agents
+    local tabbed = frame.add{
+        type = "tabbed-pane",
+        name = "ci_agent_tabs",
     }
-    scroll.style.vertically_stretchable = true
-    scroll.style.horizontally_stretchable = true
+    tabbed.style.vertically_stretchable = true
+    tabbed.style.horizontally_stretchable = true
 
-    local chat_flow = scroll.add{
-        type = "flow",
-        name = "ci_chat_flow",
-        direction = "vertical"
-    }
-    chat_flow.style.vertical_spacing = 6
-    chat_flow.style.horizontally_stretchable = true
+    -- Create a tab per registered agent
+    local active_agent = get_active_agent(player.index)
+    local active_idx = 1
+    for i, agent_name in ipairs(storage.agents) do
+        create_agent_tab(tabbed, player, agent_name)
+        if agent_name == active_agent then
+            active_idx = i
+        end
+    end
+
+    -- Select the active tab
+    tabbed.selected_tab_index = active_idx
+    storage.active_agent[player.index] = storage.agents[active_idx]
 
     -- Status indicator
     frame.add{
@@ -185,10 +279,6 @@ local function create_gui(player)
         tooltip = "Send"
     }
 
-    -- Restore chat history
-    restore_chat(player, chat_flow)
-    scroll.scroll_to_bottom()
-
     -- Focus input and register for Escape-close
     input.focus()
     player.opened = frame
@@ -214,35 +304,54 @@ end
 -- Chat Logic
 -- ============================================================
 
-local function save_message(player_index, role, text)
-    if not storage.messages[player_index] then
-        storage.messages[player_index] = {}
+local function save_message(player_index, agent_name, role, text)
+    ensure_agent_messages(player_index)
+    local msgs = storage.messages[player_index][agent_name]
+    if not msgs then
+        storage.messages[player_index][agent_name] = {}
+        msgs = storage.messages[player_index][agent_name]
     end
-    table.insert(storage.messages[player_index], {
+    table.insert(msgs, {
         role = role,
         text = text,
-        tick = game.tick
+        tick = game.tick,
     })
-    local msgs = storage.messages[player_index]
     while #msgs > MAX_MESSAGES do
         table.remove(msgs, 1)
     end
 end
 
-local function add_chat_message(player, role, text)
-    save_message(player.index, role, text)
+local function add_chat_message(player, agent_name, role, text)
+    save_message(player.index, agent_name, role, text)
 
     local frame = player.gui.screen[GUI_FRAME]
     if not frame or not frame.valid then return end
 
-    local chat_flow = frame["ci_chat_scroll"]["ci_chat_flow"]
+    local chat_flow = get_agent_chat_flow(frame, agent_name)
+    if not chat_flow then return end
     add_message_label(chat_flow, role, text)
 
     while #chat_flow.children > MAX_MESSAGES do
         chat_flow.children[1].destroy()
     end
 
-    frame["ci_chat_scroll"].scroll_to_bottom()
+    local scroll = get_agent_scroll(frame, agent_name)
+    if scroll then scroll.scroll_to_bottom() end
+
+    -- Badge for non-active tabs
+    local active = get_active_agent(player.index)
+    if agent_name ~= active and role ~= "user" then
+        local tabbed = frame["ci_agent_tabs"]
+        if tabbed then
+            local tab_idx = find_tab_index(tabbed, agent_name)
+            if tab_idx then
+                local tab_obj = tabbed.tabs[tab_idx].tab
+                local current = tab_obj.badge_text or ""
+                local count = tonumber(current) or 0
+                tab_obj.badge_text = tostring(count + 1)
+            end
+        end
+    end
 end
 
 local function set_status(player, status_text)
@@ -253,12 +362,14 @@ end
 
 local function send_to_bridge(player, message)
     storage.msg_counter = storage.msg_counter + 1
+    local target = get_active_agent(player.index)
     local payload = {
         id = storage.msg_counter,
         player_index = player.index,
         player_name = player.name,
         message = message,
-        tick = game.tick
+        target_agent = target,
+        tick = game.tick,
     }
     helpers.write_file(INPUT_FILE, helpers.table_to_json(payload) .. "\n", true, 0)
 end
@@ -274,9 +385,77 @@ local function handle_send(player)
     input.text = ""
     input.focus()
 
-    add_chat_message(player, "user", text)
+    local agent_name = get_active_agent(player.index)
+    add_chat_message(player, agent_name, "user", text)
     set_status(player, "[color=1,0.8,0.2]Thinking...[/color]")
     send_to_bridge(player, text)
+end
+
+-- ============================================================
+-- Agent Management
+-- ============================================================
+
+local function agent_exists(name)
+    for _, a in ipairs(storage.agents) do
+        if a == name then return true end
+    end
+    return false
+end
+
+local function register_agent(agent_name)
+    if agent_exists(agent_name) then return end
+    table.insert(storage.agents, agent_name)
+
+    -- Create message tables for all players
+    for _, player in pairs(game.players) do
+        ensure_agent_messages(player.index)
+    end
+
+    -- Add tab to all open GUIs
+    for _, player in pairs(game.players) do
+        local frame = player.gui.screen[GUI_FRAME]
+        if frame and frame.valid then
+            local tabbed = frame["ci_agent_tabs"]
+            if tabbed then
+                create_agent_tab(tabbed, player, agent_name)
+            end
+        end
+    end
+end
+
+local function unregister_agent(agent_name)
+    if agent_name == "default" then return end  -- never remove default
+    local idx = nil
+    for i, a in ipairs(storage.agents) do
+        if a == agent_name then idx = i; break end
+    end
+    if not idx then return end
+
+    table.remove(storage.agents, idx)
+
+    -- Remove tab from all open GUIs
+    for _, player in pairs(game.players) do
+        local frame = player.gui.screen[GUI_FRAME]
+        if frame and frame.valid then
+            local tabbed = frame["ci_agent_tabs"]
+            if tabbed then
+                local tab_idx = find_tab_index(tabbed, agent_name)
+                if tab_idx then
+                    tabbed.remove_tab(tabbed.tabs[tab_idx].tab)
+                    -- Clean up the scroll pane element
+                    local scroll = tabbed["ci_scroll_" .. agent_name]
+                    if scroll then scroll.destroy() end
+                    local tab_el = tabbed["ci_tab_" .. agent_name]
+                    if tab_el then tab_el.destroy() end
+                end
+            end
+        end
+
+        -- Reset active agent if it was the removed one
+        if storage.active_agent[player.index] == agent_name then
+            storage.active_agent[player.index] = storage.agents[1] or "default"
+        end
+    end
 end
 
 -- ============================================================
@@ -284,18 +463,20 @@ end
 -- ============================================================
 
 remote.add_interface("claude_interface", {
-    receive_response = function(player_index, text)
+    receive_response = function(player_index, agent_name, text)
         local player = game.get_player(player_index)
         if not player then return end
-        add_chat_message(player, "claude", text)
+        agent_name = agent_name or "default"
+        add_chat_message(player, agent_name, "claude", text)
         set_status(player, "[color=0.4,0.8,0.4]Ready[/color]")
     end,
 
     -- Show tool use in chat
-    tool_status = function(player_index, tool_name)
+    tool_status = function(player_index, agent_name, tool_name)
         local player = game.get_player(player_index)
         if not player then return end
-        add_chat_message(player, "tool", tool_name)
+        agent_name = agent_name or "default"
+        add_chat_message(player, agent_name, "tool", tool_name)
         set_status(player, "[color=0.6,0.7,1]Using " .. tool_name .. "...[/color]")
     end,
 
@@ -305,19 +486,44 @@ remote.add_interface("claude_interface", {
         set_status(player, status_text)
     end,
 
-    clear_chat = function(player_index)
+    clear_chat = function(player_index, agent_name)
         local player = game.get_player(player_index)
         if not player then return end
-        storage.messages[player_index] = {}
-        local frame = player.gui.screen[GUI_FRAME]
-        if frame and frame.valid then
-            frame["ci_chat_scroll"]["ci_chat_flow"].clear()
+        if agent_name then
+            -- Clear specific agent's chat
+            if storage.messages[player_index] then
+                storage.messages[player_index][agent_name] = {}
+            end
+            local frame = player.gui.screen[GUI_FRAME]
+            if frame and frame.valid then
+                local chat_flow = get_agent_chat_flow(frame, agent_name)
+                if chat_flow then chat_flow.clear() end
+            end
+        else
+            -- Clear all agents' chats
+            storage.messages[player_index] = {}
+            ensure_agent_messages(player_index)
+            local frame = player.gui.screen[GUI_FRAME]
+            if frame and frame.valid then
+                for _, a in ipairs(storage.agents) do
+                    local chat_flow = get_agent_chat_flow(frame, a)
+                    if chat_flow then chat_flow.clear() end
+                end
+            end
         end
+    end,
+
+    register_agent = function(agent_name)
+        register_agent(agent_name)
+    end,
+
+    unregister_agent = function(agent_name)
+        unregister_agent(agent_name)
     end,
 
     ping = function()
         rcon.print("pong")
-    end
+    end,
 })
 
 -- ============================================================
@@ -327,7 +533,18 @@ remote.add_interface("claude_interface", {
 script.on_init(init_storage)
 
 script.on_configuration_changed(function(data)
+    -- Migrate old flat messages to per-agent structure
+    if storage.messages then
+        for player_index, msgs in pairs(storage.messages) do
+            -- Detect old format: flat array of {role, text, tick}
+            if msgs[1] and msgs[1].role then
+                storage.messages[player_index] = {default = msgs}
+            end
+        end
+    end
+
     init_storage()
+
     -- Rebuild GUI for existing players after mod update
     for _, player in pairs(game.players) do
         local frame = player.gui.screen[GUI_FRAME]
@@ -350,6 +567,28 @@ script.on_event(defines.events.on_lua_shortcut, function(event)
     if event.prototype_name ~= "claude-interface-toggle" then return end
     local player = game.get_player(event.player_index)
     if player then toggle_gui(player) end
+end)
+
+-- Tab switching
+script.on_event(defines.events.on_gui_selected_tab_changed, function(event)
+    if not event.element or not event.element.valid then return end
+    if event.element.name ~= "ci_agent_tabs" then return end
+
+    local player = game.get_player(event.player_index)
+    if not player then return end
+
+    local tabbed = event.element
+    local idx = tabbed.selected_tab_index
+    if not idx or not tabbed.tabs[idx] then return end
+
+    local tab_obj = tabbed.tabs[idx].tab
+    local tab_name = tab_obj.name  -- "ci_tab_<agent_name>"
+    local agent_name = tab_name:sub(8)  -- strip "ci_tab_"
+
+    storage.active_agent[player.index] = agent_name
+
+    -- Clear badge on newly selected tab
+    tab_obj.badge_text = nil
 end)
 
 -- Click handler
