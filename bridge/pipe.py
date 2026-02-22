@@ -11,6 +11,7 @@ Multi-agent:   python pipe.py --group doug-squad
 """
 
 import argparse
+import io
 import json
 import os
 import queue
@@ -20,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 # Ensure sibling modules are importable
@@ -36,11 +38,50 @@ if _env_file.exists():
             if _val and _key not in os.environ:
                 os.environ[_key] = _val
 
+# ── Run logging ───────────────────────────────────────────────
+
+class TeeWriter:
+    """Duplicates writes to both a stream (console) and a log file."""
+    def __init__(self, stream, log_file: io.TextIOWrapper):
+        self.stream = stream
+        self.log_file = log_file
+
+    def write(self, data):
+        self.stream.write(data)
+        self.log_file.write(data)
+        self.log_file.flush()
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+    def fileno(self):
+        return self.stream.fileno()
+
+    def isatty(self):
+        return hasattr(self.stream, 'isatty') and self.stream.isatty()
+
+
+def setup_logging(log_dir: Path) -> Path | None:
+    """Set up tee logging to console + file. Returns log file path."""
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    log_path = log_dir / f"bridge-{stamp}.log"
+    try:
+        log_file = open(log_path, "w", buffering=1)  # line-buffered
+        sys.stdout = TeeWriter(sys.__stdout__, log_file)
+        sys.stderr = TeeWriter(sys.__stderr__, log_file)
+        return log_path
+    except OSError as e:
+        print(f"WARNING: Could not open log file {log_path}: {e}")
+        return None
+
+
 from rcon import RCONClient, ThreadSafeRCON
 from paths import find_script_output, find_factorioctl_mcp
 from transport import (InputWatcher, send_response, send_tool_status, set_status,
                        check_mod_loaded, register_agent, unregister_agent,
-                       pre_place_character, setup_surfaces)
+                       pre_place_character, setup_surfaces, set_spectator)
 from paths import find_mod_source, find_mods_dir
 from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, Telemetry, emit_chat, emit_tool_call, emit_error, emit_status
 
@@ -244,6 +285,7 @@ def build_claude_cmd(
         "--permission-mode", "bypassPermissions",
         "--mcp-config", str(mcp_config),
         "--strict-mcp-config",
+        "--setting-sources", "local",
         "--system-prompt", system_prompt,
         "--max-turns", str(max_turns),
     ]
@@ -257,7 +299,6 @@ def build_claude_cmd(
 
 def _ts():
     """Short timestamp for log lines."""
-    from datetime import datetime
     return datetime.now().strftime("%H:%M:%S")
 
 
@@ -338,10 +379,10 @@ def handle_message(
                         thought = tool_input.get("message", "")
                         if thought:
                             emit_chat(telemetry, "agent", thought, agent=tname)
-                    # Skip sending non-factorioctl tools to the game UI
+                    # Send tool status to agent's own tab (not to group chat "all" tab)
                     if not tool_name.startswith("mcp__") or tool_name.startswith("mcp__factorioctl__"):
                         try:
-                            send_tool_status(rcon, player_index, rcon_target, display)
+                            send_tool_status(rcon, player_index, agent_name, display)
                         except Exception:
                             pass
 
@@ -435,13 +476,27 @@ def build_telemetry(args) -> Telemetry | None:
 
 # ── Multi-agent mode ─────────────────────────────────────────
 
+# Planet order follows natural game progression
+PLANET_ORDER = {
+    "nauvis": 0,
+    "vulcanus": 1,
+    "fulgora": 2,
+    "gleba": 3,
+    "aquilo": 4,
+}
+
+def _agent_sort_key(agent: dict) -> tuple:
+    """Sort agents by planet progression order, then name."""
+    planet = agent.get("planet", "nauvis")
+    return (PLANET_ORDER.get(planet, 99), agent.get("name", ""))
+
 def discover_agents(group: str | None = None, names: list[str] | None = None) -> list[dict]:
     """Load agent profiles by group name or explicit name list."""
     if names:
         return [load_agent(n) for n in names]
     agents_dir = _BRIDGE_DIR / "agents"
     profiles = []
-    for f in sorted(agents_dir.glob("*.json")):
+    for f in agents_dir.glob("*.json"):
         try:
             agent = json.loads(f.read_text())
         except (json.JSONDecodeError, OSError):
@@ -450,6 +505,7 @@ def discover_agents(group: str | None = None, names: list[str] | None = None) ->
             profiles.append(load_agent(agent["name"]))
     if not profiles:
         raise ValueError(f"No agents found with group '{group}'")
+    profiles.sort(key=_agent_sort_key)
     return profiles
 
 
@@ -552,6 +608,11 @@ def main_multi(args, agent_profiles: list[dict]):
         planet = agent.get("planet", "nauvis")
         result = pre_place_character(rcon, agent["name"], planet, spawn_offset=i)
         print(f"  {agent['name']} -> {planet}: {result}")
+
+    # Spectator mode for human player (removes their character from the world)
+    if args.spectator:
+        result = set_spectator(rcon, player_index=1)
+        print(f"  Spectator mode: {result}")
 
     # Telemetry
     telemetry = build_telemetry(args)
@@ -669,6 +730,10 @@ def main():
                         help="Create planet surfaces before placing agents (for fresh worlds)")
     parser.add_argument("--stagger-delay", type=float, default=3.0,
                         help="Seconds between agent startups to avoid RCON flood (0=instant)")
+    parser.add_argument("--spectator", action="store_true",
+                        help="Put the human player into spectator mode (no character body)")
+    parser.add_argument("--log-dir", default=None,
+                        help="Directory for bridge run logs (default: logs/)")
     parser.add_argument("--sync-mod", action="store_true",
                         help="Copy mod to Factorio mods dir and exit")
     args = parser.parse_args()
@@ -677,6 +742,12 @@ def main():
     if args.sync_mod:
         _sync_mod()
         return
+
+    # Set up run logging (tee to console + file)
+    log_dir = Path(args.log_dir) if args.log_dir else (_BRIDGE_DIR.parent / "logs")
+    log_path = setup_logging(log_dir)
+    if log_path:
+        print(f"Logging to {log_path}")
 
     # Multi-agent mode
     if args.group or args.agents:

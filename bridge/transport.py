@@ -61,15 +61,21 @@ def setup_surfaces(rcon, planets: list[str]) -> dict[str, str]:
 
 def pre_place_character(rcon, agent_name: str, planet: str, spawn_offset: int = 0) -> str:
     """Create or teleport an agent's character to the specified planet surface.
+    Forces terrain generation around spawn so agents don't land in void.
     spawn_offset shifts the X position to avoid overlapping with the player.
     Returns status: already_placed, teleported, created, surface_not_found, creation_failed."""
     spawn_x = spawn_offset * 5 + 5  # offset from player spawn at (0,0)
     lua_code = (
         'if not global then global = {} end '
         'if not global.factorioctl_characters then global.factorioctl_characters = {} end '
+        'if not global.factorioctl_surfaces then global.factorioctl_surfaces = {} end '
         f'local agent_id = "{agent_name}" '
         f'local target_surface = game.surfaces["{planet}"] '
         'if not target_surface then rcon.print("surface_not_found") return end '
+        f'global.factorioctl_surfaces[agent_id] = "{planet}" '
+        # Force terrain generation around spawn (4 chunks ≈ 128 tiles)
+        f'target_surface.request_to_generate_chunks({{{spawn_x}, 0}}, 4) '
+        'target_surface.force_generate_chunk_requests() '
         'local c = global.factorioctl_characters[agent_id] '
         'if c and c.valid then '
         f'  if c.surface.name == "{planet}" then rcon.print("already_placed") return end '
@@ -86,6 +92,22 @@ def pre_place_character(rcon, agent_name: str, planet: str, spawn_offset: int = 
     )
     result = rcon.execute(f'/silent-command {lua_code}')
     return result.strip()
+
+
+def set_spectator(rcon, player_index: int = 1) -> str:
+    """Switch a player to spectator controller (no character body).
+    Use for human players who connect to spectate agent-run games.
+    Returns: 'ok', 'already_spectator', 'no_player'."""
+    lua_code = (
+        f'local p = game.get_player({player_index}) '
+        'if not p then rcon.print("no_player") return end '
+        'if p.controller_type == defines.controllers.spectator then '
+        '  rcon.print("already_spectator") return '
+        'end '
+        'p.set_controller{type = defines.controllers.spectator} '
+        'rcon.print("ok")'
+    )
+    return rcon.execute(f'/silent-command {lua_code}').strip()
 
 
 def check_mod_loaded(rcon) -> bool:

@@ -54,7 +54,7 @@ stop_server() {
 }
 
 start_bridge() {
-    local flags="--group $GROUP"
+    local flags="--group $GROUP --spectator"
     if [ "$FRESH" = true ]; then
         flags="$flags --setup-surfaces"
     fi

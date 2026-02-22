@@ -9,21 +9,41 @@ Talk to Claude AI directly from inside Factorio. Ask questions, get help with yo
 ## Quick Start
 
 ```bash
-# 1. Start the headless server
-./start-server.sh
+# Fresh world, start everything
+./run.sh fresh
 
-# 2. Start the bridge (pipes in-game GUI to Claude)
-python bridge/pipe.py
-
-# 3. Open Factorio → Multiplayer → Connect to: localhost:34197
+# Open Factorio → Multiplayer → Connect to: localhost:34197
 ```
 
 In-game: press **Ctrl+Shift+C** or click the **Q button** in the shortcut bar. Type a message and hit Enter.
 
-To reset to a fresh world:
+### run.sh commands
+
+| Command | What it does |
+|---|---|
+| `./run.sh` | Start bridge only (default) |
+| `./run.sh fresh` | New world + setup planet surfaces + start bridge |
+| `./run.sh restart` | Stop server, sync mod, start server + bridge |
+| `./run.sh restart fresh` | Same as restart but with a new world |
+| `./run.sh server` | Start server only |
+| `./run.sh server fresh` | Start server with a new world |
+| `./run.sh bridge` | Start bridge only |
+| `./run.sh stop` | Stop server |
+| `./run.sh sync` | Sync mod to Factorio mods dir |
+
+Environment variables:
 ```bash
-./stop-server.sh
-./start-server.sh --fresh
+GROUP=doug-squad ./run.sh fresh    # Agent group (default: doug-squad)
+MODEL=sonnet ./run.sh fresh        # Claude model override
+```
+
+### Manual start (without run.sh)
+
+```bash
+./start-server.sh                  # Start headless server
+python bridge/pipe.py              # Start bridge (single agent)
+./stop-server.sh                   # Stop server
+./start-server.sh --fresh          # Fresh world
 ```
 
 ## How It Works
@@ -188,7 +208,6 @@ python bridge/pipe.py
 
 - **Ctrl+Shift+C** — Toggle the chat panel
 - **Shortcut bar button** (bottom-right) — Same thing, repositionable
-- **S / M / L buttons** — Resize the panel
 - **Enter** — Send message
 - **Escape** — Close panel
 - Draggable title bar
@@ -215,6 +234,7 @@ claude-in-factorio/
 │   └── wrangler.toml
 ├── configs/                 # Server and map-gen settings
 ├── factorioctl/             # Clone separately (gitignored)
+├── run.sh                   # Unified launcher (fresh/restart/bridge/stop)
 ├── start-server.sh
 ├── stop-server.sh
 ├── .mcp.json                # MCP config for direct Claude Code use

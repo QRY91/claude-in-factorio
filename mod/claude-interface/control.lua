@@ -55,14 +55,17 @@ end
 -- GUI Construction
 -- ============================================================
 
-local function add_message_label(chat_flow, role, text)
+local function get_agent_display_name(player)
+    return settings.get_player_settings(player)["claude-interface-agent-label"].value or "Claude"
+end
+
+local function add_message_label(chat_flow, role, text, player)
     local caption
     if role == "user" then
         caption = "[color=1,0.85,0.4]You:[/color] " .. text
     elseif role == "claude" then
-        caption = "[color=0.6,0.8,1]Claude:[/color] " .. text
-    elseif role == "tool" then
-        caption = "[color=0.5,0.7,0.5]> " .. text .. "[/color]"
+        local name = player and get_agent_display_name(player) or "Claude"
+        caption = "[color=0.6,0.8,1]" .. name .. ":[/color] " .. text
     else
         caption = "[color=0.6,0.6,0.6]" .. text .. "[/color]"
     end
@@ -81,7 +84,7 @@ local function restore_chat(player, chat_flow, agent_name)
     local msgs = storage.messages[player.index][agent_name]
     if not msgs then return end
     for _, msg in ipairs(msgs) do
-        add_message_label(chat_flow, msg.role, msg.text)
+        add_message_label(chat_flow, msg.role, msg.text, player)
     end
 end
 
@@ -175,10 +178,11 @@ local function create_gui(player)
     titlebar.drag_target = frame
     titlebar.style.vertical_align = "center"
 
+    local title_text = settings.get_player_settings(player)["claude-interface-title"].value or "Claude AI"
     titlebar.add{
         type = "label",
         name = "ci_title",
-        caption = "Claude AI",
+        caption = title_text,
         style = "frame_title"
     }
 
@@ -300,7 +304,7 @@ local function add_chat_message(player, agent_name, role, text)
 
     local chat_flow = get_agent_chat_flow(frame, agent_name)
     if not chat_flow then return end
-    add_message_label(chat_flow, role, text)
+    add_message_label(chat_flow, role, text, player)
 
     while #chat_flow.children > MAX_MESSAGES do
         chat_flow.children[1].destroy()
@@ -455,9 +459,9 @@ local function process_rcon_queue()
                 set_status(player, "[color=0.4,0.8,0.4]Ready[/color]")
             end
         elseif item.type == "tool" then
+            -- Tool calls only shown in status bar, not in chat log
             local player = game.get_player(item.pi)
             if player then
-                add_chat_message(player, item.agent, "tool", item.tool)
                 set_status(player, "[color=0.6,0.7,1]Using " .. item.tool .. "...[/color]")
             end
         elseif item.type == "status" then
@@ -577,6 +581,20 @@ script.on_configuration_changed(function(data)
             create_gui(player)
         end
         update_shortcut_state(player)
+    end
+end)
+
+-- Settings changed — rebuild GUI to pick up new title/label
+script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
+    if event.setting == "claude-interface-title" or event.setting == "claude-interface-agent-label" then
+        local player = game.get_player(event.player_index)
+        if player then
+            local frame = player.gui.screen[GUI_FRAME]
+            if frame and frame.valid then
+                frame.destroy()
+                create_gui(player)
+            end
+        end
     end
 end)
 
