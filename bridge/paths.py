@@ -1,4 +1,4 @@
-"""Path discovery for Factorio script-output and factorioctl binaries."""
+"""Path discovery for Factorio script-output, mods, and factorioctl binaries."""
 
 import os
 import shutil
@@ -36,6 +36,49 @@ def find_script_output() -> Path:
     raise FileNotFoundError(
         "Could not find Factorio script-output directory. "
         "Set FACTORIO_SERVER_DATA or run from the project root."
+    )
+
+
+def find_mod_source() -> Path:
+    """Find the mod source directory (mod/claude-interface/)."""
+    search = Path.cwd()
+    while search != search.parent:
+        candidate = search / "mod" / "claude-interface"
+        if candidate.is_dir():
+            return candidate
+        search = search.parent
+    raise FileNotFoundError(
+        "Could not find mod/claude-interface/ directory. Run from the project root."
+    )
+
+
+def find_mods_dir() -> Path:
+    """Find the Factorio mods directory for deployment.
+    Checks FACTORIO_MODS_DIR env var, then common locations."""
+    env_val = os.environ.get("FACTORIO_MODS_DIR")
+    if env_val:
+        p = Path(env_val)
+        if p.is_dir():
+            return p
+        raise FileNotFoundError(f"FACTORIO_MODS_DIR={env_val} does not exist")
+
+    candidates = [
+        Path(os.path.expanduser("~/.factorio/mods")),
+        Path(os.path.expanduser(
+            "~/.var/app/com.valvesoftware.Steam/.factorio/mods"
+        )),
+        Path(os.path.expanduser(
+            "~/Library/Application Support/factorio/mods"
+        )),
+        Path(os.path.expanduser("~/AppData/Roaming/Factorio/mods")),
+    ]
+    for c in candidates:
+        if c.is_dir():
+            return c
+
+    raise FileNotFoundError(
+        "Could not find Factorio mods directory. "
+        "Set FACTORIO_MODS_DIR env var or add it to bridge/.env"
     )
 
 

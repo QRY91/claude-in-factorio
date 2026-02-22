@@ -15,6 +15,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -40,6 +41,7 @@ from paths import find_script_output, find_factorioctl_mcp
 from transport import (InputWatcher, send_response, send_tool_status, set_status,
                        check_mod_loaded, register_agent, unregister_agent,
                        pre_place_character, setup_surfaces)
+from paths import find_mod_source, find_mods_dir
 from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, Telemetry, emit_chat, emit_tool_call, emit_error, emit_status
 
 _BRIDGE_DIR = Path(__file__).resolve().parent
@@ -596,6 +598,29 @@ def main_multi(args, agent_profiles: list[dict]):
         print("Done.")
 
 
+def _sync_mod():
+    """Copy mod source to Factorio mods directory."""
+    src = find_mod_source()
+    mods_dir = find_mods_dir()
+    dst = mods_dir / "claude-interface"
+    dst.mkdir(parents=True, exist_ok=True)
+
+    count = 0
+    for f in src.rglob("*"):
+        if f.is_file():
+            rel = f.relative_to(src)
+            target = dst / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, target)
+            count += 1
+
+    # Read version from info.json
+    info = json.loads((src / "info.json").read_text())
+    ver = info.get("version", "?")
+    print(f"Synced claude-interface v{ver} ({count} files)")
+    print(f"  {src} -> {dst}")
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 def main():
@@ -623,7 +648,14 @@ def main():
     parser.add_argument("--relay-token", default=None)
     parser.add_argument("--setup-surfaces", action="store_true",
                         help="Create planet surfaces before placing agents (for fresh worlds)")
+    parser.add_argument("--sync-mod", action="store_true",
+                        help="Copy mod to Factorio mods dir and exit")
     args = parser.parse_args()
+
+    # Sync mod and exit
+    if args.sync_mod:
+        _sync_mod()
+        return
 
     # Multi-agent mode
     if args.group or args.agents:
