@@ -584,9 +584,14 @@ def main_multi(args, agent_profiles: list[dict]):
     if mcp_bin:
         print(f"  MCP server:  {mcp_bin}")
 
-    # Start all agent threads
-    for at in agents.values():
+    # Start agent threads with staggered delays to avoid RCON flood
+    stagger = args.stagger_delay
+    print(f"\nStarting agents (stagger: {stagger}s)...")
+    for i, at in enumerate(agents.values()):
         at.start()
+        print(f"  [{_ts()}] {at.agent_name} online")
+        if stagger > 0 and i < len(agents) - 1:
+            time.sleep(stagger)
 
     print(f"\nWatching for messages... (Ctrl+C to stop)\n")
 
@@ -596,9 +601,11 @@ def main_multi(args, agent_profiles: list[dict]):
             for msg in watcher.poll():
                 target = msg.get("target_agent", "default")
                 if target == "all":
-                    # Fan out to all agents with response routing to "all" tab
-                    for at in agents.values():
+                    # Fan out to all agents with staggered delivery
+                    for i, at in enumerate(agents.values()):
                         at.enqueue({**msg, "response_to": "all"})
+                        if i < len(agents) - 1:
+                            time.sleep(1)  # stagger to avoid RCON flood
                 elif target in agents:
                     agents[target].enqueue(msg)
                 else:
@@ -660,6 +667,8 @@ def main():
     parser.add_argument("--relay-token", default=None)
     parser.add_argument("--setup-surfaces", action="store_true",
                         help="Create planet surfaces before placing agents (for fresh worlds)")
+    parser.add_argument("--stagger-delay", type=float, default=3.0,
+                        help="Seconds between agent startups to avoid RCON flood (0=instant)")
     parser.add_argument("--sync-mod", action="store_true",
                         help="Copy mod to Factorio mods dir and exit")
     args = parser.parse_args()
