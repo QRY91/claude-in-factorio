@@ -81,7 +81,7 @@ from rcon import RCONClient, ThreadSafeRCON
 from paths import find_script_output, find_factorioctl_mcp
 from transport import (InputWatcher, send_response, send_tool_status, set_status,
                        check_mod_loaded, register_agent, unregister_agent,
-                       pre_place_character, setup_surfaces, set_spectator)
+                       pre_place_character, setup_surfaces, set_spectator_mode)
 from paths import find_mod_source, find_mods_dir
 from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, Telemetry, emit_chat, emit_tool_call, emit_error, emit_status
 
@@ -609,10 +609,10 @@ def main_multi(args, agent_profiles: list[dict]):
         result = pre_place_character(rcon, agent["name"], planet, spawn_offset=i)
         print(f"  {agent['name']} -> {planet}: {result}")
 
-    # Spectator mode for human player (removes their character from the world)
+    # Spectator mode: players who connect will be set to spectator (no character body)
     if args.spectator:
-        result = set_spectator(rcon, player_index=1)
-        print(f"  Spectator mode: {result}")
+        set_spectator_mode(rcon, enabled=True)
+        print("  Spectator mode: enabled (players join as spectators)")
 
     # Telemetry
     telemetry = build_telemetry(args)

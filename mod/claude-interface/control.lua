@@ -16,6 +16,7 @@ local function init_storage()
     storage.agent_labels = storage.agent_labels or {}
     storage.active_agent = storage.active_agent or {}
     storage._rcon_queue = storage._rcon_queue or {}
+    storage.spectator_mode = storage.spectator_mode or false
 end
 
 -- Ensure per-agent message tables exist for a player
@@ -546,6 +547,18 @@ remote.add_interface("claude_interface", {
         })
     end,
 
+    set_spectator_mode = function(enabled)
+        storage.spectator_mode = enabled
+        -- Apply to all currently connected players
+        if enabled then
+            for _, player in pairs(game.players) do
+                if player.connected and player.controller_type ~= defines.controllers.spectator then
+                    player.set_controller{type = defines.controllers.spectator}
+                end
+            end
+        end
+    end,
+
     ping = function()
         rcon.print("pong")
     end,
@@ -594,6 +607,16 @@ script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
                 frame.destroy()
                 create_gui(player)
             end
+        end
+    end
+end)
+
+-- Auto-spectator: when spectator_mode is enabled, new players join as spectators
+script.on_event(defines.events.on_player_joined_game, function(event)
+    if storage.spectator_mode then
+        local player = game.get_player(event.player_index)
+        if player and player.controller_type ~= defines.controllers.spectator then
+            player.set_controller{type = defines.controllers.spectator}
         end
     end
 end)

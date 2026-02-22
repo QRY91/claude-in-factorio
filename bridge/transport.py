@@ -94,20 +94,13 @@ def pre_place_character(rcon, agent_name: str, planet: str, spawn_offset: int = 
     return result.strip()
 
 
-def set_spectator(rcon, player_index: int = 1) -> str:
-    """Switch a player to spectator controller (no character body).
-    Use for human players who connect to spectate agent-run games.
-    Returns: 'ok', 'already_spectator', 'no_player'."""
-    lua_code = (
-        f'local p = game.get_player({player_index}) '
-        'if not p then rcon.print("no_player") return end '
-        'if p.controller_type == defines.controllers.spectator then '
-        '  rcon.print("already_spectator") return '
-        'end '
-        'p.set_controller{type = defines.controllers.spectator} '
-        'rcon.print("ok")'
-    )
-    return rcon.execute(f'/silent-command {lua_code}').strip()
+def set_spectator_mode(rcon, enabled: bool = True):
+    """Enable/disable spectator mode via the mod. When enabled, all connecting
+    players are automatically set to spectator (no character body).
+    Persists across player joins — no timing issues."""
+    val = "true" if enabled else "false"
+    lua = f'/silent-command remote.call("claude_interface", "set_spectator_mode", {val})'
+    rcon.execute(lua)
 
 
 def check_mod_loaded(rcon) -> bool:
