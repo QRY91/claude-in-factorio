@@ -5,12 +5,6 @@ local GUI_FRAME = "claude_interface_frame"
 local MAX_MESSAGES = 100
 local INPUT_FILE = "claude-chat/input.jsonl"
 
-local SIZES = {
-    {name = "S", w = 380, h = 350},
-    {name = "M", w = 520, h = 500},
-    {name = "L", w = 700, h = 650},
-}
-
 -- ============================================================
 -- Storage
 -- ============================================================
@@ -18,17 +12,10 @@ local SIZES = {
 local function init_storage()
     storage.messages = storage.messages or {}
     storage.msg_counter = storage.msg_counter or 0
-    storage.gui_size = storage.gui_size or {}
     storage.agents = storage.agents or {"default"}
     storage.agent_labels = storage.agent_labels or {}
     storage.active_agent = storage.active_agent or {}
     storage._rcon_queue = storage._rcon_queue or {}
-end
-
-local function get_size(player_index)
-    if not storage.gui_size then storage.gui_size = {} end
-    local idx = storage.gui_size[player_index] or 2
-    return SIZES[idx], idx
 end
 
 -- Ensure per-agent message tables exist for a player
@@ -96,11 +83,6 @@ local function restore_chat(player, chat_flow, agent_name)
     for _, msg in ipairs(msgs) do
         add_message_label(chat_flow, msg.role, msg.text)
     end
-end
-
-local function apply_size(frame, size)
-    frame.style.width = size.w
-    frame.style.height = size.h
 end
 
 -- Get the chat_flow for a specific agent tab
@@ -172,7 +154,6 @@ end
 local function create_gui(player)
     if player.gui.screen[GUI_FRAME] then return end
 
-    local size, _ = get_size(player.index)
     ensure_agent_messages(player.index)
 
     -- Main frame
@@ -182,10 +163,10 @@ local function create_gui(player)
         direction = "vertical"
     }
     frame.auto_center = true
-    frame.style.width = size.w
-    frame.style.height = size.h
+    frame.style.width = 700
+    frame.style.height = 650
 
-    -- Titlebar: drag + size buttons + close
+    -- Titlebar: drag + close
     local titlebar = frame.add{
         type = "flow",
         name = "ci_titlebar",
@@ -209,21 +190,6 @@ local function create_gui(player)
     spacer.style.horizontally_stretchable = true
     spacer.style.height = 24
     spacer.drag_target = frame
-
-    -- Size toggle buttons
-    for i, s in ipairs(SIZES) do
-        local btn = titlebar.add{
-            type = "button",
-            name = "ci_size_" .. i,
-            caption = s.name,
-            tooltip = s.w .. "x" .. s.h,
-            style = "tool_button"
-        }
-        btn.style.width = 28
-        btn.style.height = 28
-        btn.style.padding = 0
-        btn.style.font = "default-small"
-    end
 
     titlebar.add{
         type = "sprite-button",
@@ -277,6 +243,8 @@ local function create_gui(player)
         tooltip = "Type a message and press Enter"
     }
     input.style.horizontally_stretchable = true
+    input.style.minimal_width = 0
+    input.style.maximal_width = 0
 
     input_flow.add{
         type = "sprite-button",
@@ -658,14 +626,6 @@ script.on_event(defines.events.on_gui_click, function(event)
         local player = game.get_player(event.player_index)
         destroy_gui(player)
         update_shortcut_state(player)
-    elseif name:match("^ci_size_%d$") then
-        local idx = tonumber(name:sub(-1))
-        local player = game.get_player(event.player_index)
-        storage.gui_size[player.index] = idx
-        local frame = player.gui.screen[GUI_FRAME]
-        if frame and frame.valid then
-            apply_size(frame, SIZES[idx])
-        end
     end
 end)
 

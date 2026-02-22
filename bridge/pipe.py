@@ -333,7 +333,11 @@ def handle_message(
                     if len(input_summary) > 80:
                         input_summary = input_summary[:77] + "..."
                     print(f"  [{_ts()}] tool: {display}({input_summary})")
-                    emit_tool_call(telemetry, display, tool_input, agent=tname)
+                    # Only emit select tools to telemetry (broadcast_thought = agent narration)
+                    if display == "broadcast_thought":
+                        thought = tool_input.get("message", "")
+                        if thought:
+                            emit_chat(telemetry, "agent", thought, agent=tname)
                     # Skip sending non-factorioctl tools to the game UI
                     if not tool_name.startswith("mcp__") or tool_name.startswith("mcp__factorioctl__"):
                         try:
@@ -361,11 +365,17 @@ def handle_message(
             turns = msg.get("num_turns")
             if cost is not None:
                 print(f"  [{_ts()}] done: ${cost:.4f} | {turns} turns | {(duration or 0)/1000:.1f}s")
-                emit_status(telemetry, {
-                    "cost_usd": cost,
-                    "turns": turns,
-                    "duration_ms": duration,
-                }, agent=tname)
+                # Emit as compute_cost — routed to funding meter, not log feed
+                if telemetry:
+                    telemetry.emit({
+                        "type": "compute_cost",
+                        "data": {
+                            "cost_usd": cost,
+                            "turns": turns,
+                            "duration_ms": duration,
+                        },
+                        "agent": tname,
+                    })
 
     proc.wait()
 
@@ -536,11 +546,11 @@ def main_multi(args, agent_profiles: list[dict]):
             for planet, status in results.items():
                 print(f"  {planet}: {status}")
 
-    # Pre-place characters on correct planets
+    # Pre-place characters on correct planets (offset to avoid overlapping with player)
     print("\nPre-placing characters...")
-    for agent in agent_profiles:
+    for i, agent in enumerate(agent_profiles):
         planet = agent.get("planet", "nauvis")
-        result = pre_place_character(rcon, agent["name"], planet)
+        result = pre_place_character(rcon, agent["name"], planet, spawn_offset=i)
         print(f"  {agent['name']} -> {planet}: {result}")
 
     # Telemetry

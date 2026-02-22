@@ -59,9 +59,11 @@ def setup_surfaces(rcon, planets: list[str]) -> dict[str, str]:
     return results
 
 
-def pre_place_character(rcon, agent_name: str, planet: str) -> str:
+def pre_place_character(rcon, agent_name: str, planet: str, spawn_offset: int = 0) -> str:
     """Create or teleport an agent's character to the specified planet surface.
+    spawn_offset shifts the X position to avoid overlapping with the player.
     Returns status: already_placed, teleported, created, surface_not_found, creation_failed."""
+    spawn_x = spawn_offset * 5 + 5  # offset from player spawn at (0,0)
     lua_code = (
         'if not global then global = {} end '
         'if not global.factorioctl_characters then global.factorioctl_characters = {} end '
@@ -71,10 +73,10 @@ def pre_place_character(rcon, agent_name: str, planet: str) -> str:
         'local c = global.factorioctl_characters[agent_id] '
         'if c and c.valid then '
         f'  if c.surface.name == "{planet}" then rcon.print("already_placed") return end '
-        '  c.teleport({0, 0}, target_surface) '
+        f'  c.teleport({{{spawn_x}, 0}}, target_surface) '
         '  rcon.print("teleported") return '
         'end '
-        'local new_char = target_surface.create_entity{name = "character", position = {0, 0}, force = game.forces.player} '
+        f'local new_char = target_surface.create_entity{{name = "character", position = {{{spawn_x}, 0}}, force = game.forces.player}} '
         'if new_char then '
         '  global.factorioctl_characters[agent_id] = new_char '
         '  rcon.print("created") '
