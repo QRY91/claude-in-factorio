@@ -82,18 +82,28 @@ def build_format_instructions(fmt: dict) -> str:
     sections = fmt.get("sections", [])
 
     lines = [
-        "Response format (follow this structure in every response):",
-        f"- First line: [color={header_color}]{header_label}:[/color] followed by a short classification",
-        "- Body: plain text paragraphs. Use [item=name] for items, [entity=name] for buildings.",
-        f"- If you took actions: [color={action_color}]{action_label}:[/color] followed by a bulleted list (- prefix)",
+        "OUTPUT FORMAT — you MUST use these exact Factorio rich text tags in every response.",
+        "These tags render as colored text in the game terminal. Output them literally.",
+        "",
+        "Structure:",
+        f"  [color={header_color}]{header_label}:[/color] <short classification>",
+        "",
+        "  <body paragraphs — use [item=iron-plate] for items, [entity=stone-furnace] for buildings>",
     ]
+    if True:  # always include actions
+        lines.append("")
+        lines.append(f"  [color={action_color}]{action_label}:[/color]")
+        lines.append("  - action one")
+        lines.append("  - action two")
     for sec in sections:
         color = sec.get("color", "0.5,0.7,0.5")
-        desc = sec.get("description", sec["label"].lower() + " data")
-        lines.append(f"- [color={color}]{sec['label']}:[/color] for {desc}")
+        lines.append("")
+        lines.append(f"  [color={color}]{sec['label']}:[/color] <{sec.get('description', sec['label'].lower())}>")
     if footer_label:
-        lines.append(f"- Last line: [color={footer_color}]{footer_label}:[/color] closing status")
-    lines.append("- No markdown (**, ##, ```). Use Factorio rich text tags only.")
+        lines.append("")
+        lines.append(f"  [color={footer_color}]{footer_label}:[/color] <closing status>")
+    lines.append("")
+    lines.append("Rules: No markdown (**, ##, ```). The [color=r,g,b]...[/color] tags are mandatory, not optional.")
     return "\n".join(lines)
 
 
@@ -230,6 +240,7 @@ def build_claude_cmd(
         "--verbose",
         "--permission-mode", "bypassPermissions",
         "--mcp-config", str(mcp_config),
+        "--strict-mcp-config",
         "--system-prompt", system_prompt,
         "--max-turns", str(max_turns),
     ]
