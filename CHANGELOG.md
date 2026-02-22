@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0 — 2025-02-22
+
+Multi-agent support: run multiple agents from a single bridge process.
+
+- **Multi-agent mode** — `--group` and `--agents` CLI flags for concurrent agent management
+  - One thread per agent with independent message queues
+  - ThreadSafeRCON wrapper for shared RCON connection
+  - Automatic character pre-placement on target planet surfaces
+  - Per-agent session files (`.session-{name}.json`) to avoid thread contention
+- **Agent profiles** — added `planet` and `group` fields to agent schema
+  - `--group doug-squad` discovers all agents matching that group
+  - 5 planet-specific Doug profiles: nauvis, vulcanus, fulgora, gleba, aquilo
+- **Character placement** — `pre_place_character()` creates or teleports characters to target surfaces via RCON Lua
+- **Agent unregistration** — bridge can remove "default" agent when taking over agent management
+- **Mod update** — allows unregistering "default" when other agents exist (control.lua)
+
 ## 0.3.0 — 2025-02-22
 
 Cleanup: removed legacy backends, single architecture.

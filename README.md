@@ -123,11 +123,30 @@ python bridge/pipe.py
 # Connect from Steam: Multiplayer → Connect to address → localhost:34197
 ```
 
+## Multi-Agent Mode
+
+Run multiple agents from a single process, each on their own planet:
+
+```bash
+# All agents in a group
+python bridge/pipe.py --group doug-squad
+
+# Specific agents
+python bridge/pipe.py --agents doug-nauvis,doug-vulcanus
+```
+
+Each agent gets its own thread, session file, and in-game chat tab. Characters are automatically placed on their target planet at startup. A single RCON connection is shared (thread-safe).
+
+Agent profiles live in `bridge/agents/` as JSON files with `planet` and `group` fields for multi-agent discovery.
+
 ## Options
 
 ```
 python bridge/pipe.py --help
 
+  --agent            Single agent name (default: default)
+  --group            Load all agents matching this group name
+  --agents           Comma-separated agent names
   --rcon-host        RCON host (default: localhost)
   --rcon-port        RCON port (default: 27015)
   --rcon-password    RCON password (default: factorio)
@@ -179,12 +198,12 @@ python bridge/pipe.py
 ```
 claude-in-factorio/
 ├── bridge/
-│   ├── pipe.py             # Main entry point: in-game GUI ↔ claude CLI
-│   ├── rcon.py             # RCON protocol client
-│   ├── transport.py        # Mod IPC (file watcher, RCON responses)
+│   ├── pipe.py             # Main entry point (single + multi-agent)
+│   ├── rcon.py             # RCON protocol client + ThreadSafeRCON
+│   ├── transport.py        # Mod IPC, RCON responses, character placement
 │   ├── telemetry.py        # SSE + relay telemetry
-│   ├── paths.py            # Auto-detect factorioctl and script-output
-│   ├── agents/             # Agent profiles (JSON)
+│   ├── paths.py            # Auto-detect script-output path
+│   ├── agents/             # Agent profiles (JSON, planet/group fields)
 │   └── relay_push.sh       # Manual telemetry push helper
 ├── mod/claude-interface/    # Factorio mod (copy to mods dir)
 │   ├── control.lua
@@ -212,7 +231,7 @@ claude-in-factorio/
 
 **"Mod mismatch" when connecting** — Server and client must have the same mod version. Re-copy the mod and run `./start-server.sh --fresh`.
 
-**pipe.py can't find script-output** — Auto-detected from `.factorio-server-data/`. Set `FACTORIO_SERVER_DATA` env var or pass `--script-output /path/to/script-output/` to override.
+**pipe.py can't find script-output** — Auto-detected from `.factorio-server-data/`. Set `FACTORIO_SERVER_DATA` env var to override.
 
 **Steam/Flatpak: mod not loading** — Flatpak can't follow symlinks. Always **copy**, don't symlink.
 

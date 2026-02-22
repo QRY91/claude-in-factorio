@@ -78,6 +78,22 @@ class RCONClient:
             self.sock.close()
 
 
+class ThreadSafeRCON:
+    """Thread-safe wrapper around RCONClient. Duck-type compatible."""
+
+    def __init__(self, rcon: RCONClient, lock=None):
+        import threading
+        self._rcon = rcon
+        self._lock = lock or threading.Lock()
+
+    def execute(self, command: str) -> str:
+        with self._lock:
+            return self._rcon.execute(command)
+
+    def close(self):
+        self._rcon.close()
+
+
 def lua_long_string(text: str) -> str:
     """Wrap text in a Lua long bracket string with auto-detected level."""
     level = 0

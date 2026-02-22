@@ -6,17 +6,17 @@ Watches for player messages from the mod, pipes each one through
 `claude -p --resume SESSION` with factorioctl MCP tools, and sends
 the response back via RCON.
 
-No SDK, no API client, no tool definitions. Just plumbing.
-
-Usage:
-    python pipe.py [--agent doug] [--model sonnet] [--rcon-port 27015]
+Single-agent:  python pipe.py --agent doug-nauvis
+Multi-agent:   python pipe.py --group doug-squad
 """
 
 import argparse
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -34,9 +34,10 @@ if _env_file.exists():
             if _val and _key not in os.environ:
                 os.environ[_key] = _val
 
-from rcon import RCONClient
+from rcon import RCONClient, ThreadSafeRCON
 from paths import find_script_output, find_factorioctl_mcp
-from transport import InputWatcher, send_response, send_tool_status, set_status, check_mod_loaded, register_agent
+from transport import (InputWatcher, send_response, send_tool_status, set_status,
+                       check_mod_loaded, register_agent, unregister_agent, pre_place_character)
 from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, Telemetry, emit_chat, emit_tool_call, emit_error, emit_status
 
 _BRIDGE_DIR = Path(__file__).resolve().parent
@@ -63,27 +64,34 @@ def load_agent(agent_name: str) -> dict:
 
 # ── Session persistence ──────────────────────────────────────
 
+def _session_file(agent_name: str) -> Path:
+    return _BRIDGE_DIR / f".session-{agent_name}.json"
+
+
 def load_session(agent_name: str) -> str | None:
     """Load persisted session ID for an agent."""
-    if not SESSIONS_FILE.exists():
-        return None
-    try:
-        data = json.loads(SESSIONS_FILE.read_text())
-        return data.get(agent_name)
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
-def save_session(agent_name: str, session_id: str):
-    """Persist session ID for an agent."""
-    data = {}
+    # Per-agent file (preferred)
+    f = _session_file(agent_name)
+    if f.exists():
+        try:
+            data = json.loads(f.read_text())
+            return data.get("session_id")
+        except (json.JSONDecodeError, OSError):
+            return None
+    # Backward compat: check old shared file
     if SESSIONS_FILE.exists():
         try:
             data = json.loads(SESSIONS_FILE.read_text())
+            return data.get(agent_name)
         except (json.JSONDecodeError, OSError):
-            pass
-    data[agent_name] = session_id
-    SESSIONS_FILE.write_text(json.dumps(data, indent=2) + "\n")
+            return None
+    return None
+
+
+def save_session(agent_name: str, session_id: str):
+    """Persist session ID for an agent (per-agent file, thread-safe)."""
+    f = _session_file(agent_name)
+    f.write_text(json.dumps({"session_id": session_id}) + "\n")
 
 
 # ── MCP config ───────────────────────────────────────────────
@@ -295,6 +303,162 @@ def build_telemetry(args) -> Telemetry | None:
     return None
 
 
+# ── Multi-agent mode ─────────────────────────────────────────
+
+def discover_agents(group: str | None = None, names: list[str] | None = None) -> list[dict]:
+    """Load agent profiles by group name or explicit name list."""
+    if names:
+        return [load_agent(n) for n in names]
+    agents_dir = _BRIDGE_DIR / "agents"
+    profiles = []
+    for f in sorted(agents_dir.glob("*.json")):
+        try:
+            agent = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if agent.get("group") == group:
+            profiles.append(load_agent(agent["name"]))
+    if not profiles:
+        raise ValueError(f"No agents found with group '{group}'")
+    return profiles
+
+
+class AgentThread:
+    """Manages one agent's claude CLI sessions in a dedicated thread."""
+
+    def __init__(self, agent: dict, mcp_config: Path | None, rcon,
+                 telemetry: 'Telemetry | None', model: str | None):
+        self.agent = agent
+        self.agent_name = agent["name"]
+        self.system_prompt = agent["system_prompt"]
+        self.model = model or agent.get("model")
+        self.max_turns = agent.get("max_turns", 15)
+        self.telemetry_name = agent.get("telemetry_name", self.agent_name)
+        self.mcp_config = mcp_config
+        self.rcon = rcon
+        self.telemetry = telemetry
+        self.session_id = load_session(self.agent_name)
+        self.inbox: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._run, name=f"agent-{self.agent_name}", daemon=True,
+        )
+
+    def start(self):
+        self._thread.start()
+
+    def enqueue(self, msg: dict):
+        self.inbox.put(msg)
+
+    def _run(self):
+        while True:
+            msg = self.inbox.get()
+            player_index = msg.get("player_index", 1)
+            player_name = msg.get("player_name", "Player")
+            message = msg["message"]
+
+            print(f"[{player_name} -> {self.agent_name}] {message}")
+            emit_chat(self.telemetry, "player", message, agent=self.telemetry_name)
+
+            try:
+                set_status(self.rcon, player_index, "[color=1,0.8,0.2]Thinking...[/color]")
+            except Exception:
+                pass
+
+            if not self.mcp_config:
+                send_response(self.rcon, player_index, self.agent_name,
+                              "Error: factorioctl MCP not found")
+                continue
+
+            new_session = handle_message(
+                message, self.mcp_config, self.system_prompt, self.session_id,
+                self.rcon, player_index, self.telemetry,
+                agent_name=self.telemetry_name, model=self.model,
+                max_turns=self.max_turns,
+            )
+            if new_session:
+                self.session_id = new_session
+                save_session(self.agent_name, self.session_id)
+
+
+def main_multi(args, agent_profiles: list[dict]):
+    """Multi-agent mode: one thread per agent, shared watcher."""
+    # Shared RCON (thread-safe)
+    print("Connecting to Factorio RCON...")
+    rcon_raw = RCONClient(args.rcon_host, args.rcon_port, args.rcon_password)
+    rcon = ThreadSafeRCON(rcon_raw)
+    print("RCON connected!")
+
+    mod_loaded = check_mod_loaded(rcon)
+    if mod_loaded:
+        print("claude-interface mod detected!")
+        # Unregister default, register all agents
+        unregister_agent(rcon, "default")
+        for agent in agent_profiles:
+            register_agent(rcon, agent["name"])
+            print(f"  Registered agent: {agent['name']}")
+    else:
+        print("WARNING: claude-interface mod not detected.")
+
+    # Pre-place characters on correct planets
+    print("\nPre-placing characters...")
+    for agent in agent_profiles:
+        planet = agent.get("planet", "nauvis")
+        result = pre_place_character(rcon, agent["name"], planet)
+        print(f"  {agent['name']} -> {planet}: {result}")
+
+    # Telemetry
+    telemetry = build_telemetry(args)
+
+    # MCP configs and agent threads
+    mcp_bin = args.factorioctl_mcp or find_factorioctl_mcp()
+    agents: dict[str, AgentThread] = {}
+    for agent in agent_profiles:
+        mcp_config = None
+        if mcp_bin:
+            mcp_config = write_mcp_config(
+                mcp_bin, args.rcon_host, args.rcon_port,
+                args.rcon_password, agent_id=agent["name"],
+            )
+        at = AgentThread(agent, mcp_config, rcon, telemetry, args.model)
+        agents[agent["name"]] = at
+
+    # Resolve paths and start watcher
+    script_output = Path(args.script_output) if args.script_output else find_script_output()
+    input_file = script_output / "claude-chat" / "input.jsonl"
+    input_file.parent.mkdir(parents=True, exist_ok=True)
+    watcher = InputWatcher(input_file)
+
+    # Banner
+    agent_names = ", ".join(a["name"] for a in agent_profiles)
+    print(f"\nClaude-in-Factorio — multi-agent")
+    print(f"  Agents:      {agent_names}")
+    print(f"  RCON:        {args.rcon_host}:{args.rcon_port}")
+    print(f"  Input:       {input_file}")
+    if mcp_bin:
+        print(f"  MCP server:  {mcp_bin}")
+
+    # Start all agent threads
+    for at in agents.values():
+        at.start()
+
+    print(f"\nWatching for messages... (Ctrl+C to stop)\n")
+
+    try:
+        while True:
+            time.sleep(args.poll_interval)
+            for msg in watcher.poll():
+                target = msg.get("target_agent", "default")
+                if target in agents:
+                    agents[target].enqueue(msg)
+                else:
+                    print(f"[warn] Message for unknown agent '{target}', dropping")
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    finally:
+        rcon.close()
+        print("Done.")
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 def main():
@@ -302,8 +466,12 @@ def main():
         description="Thin pipe: Factorio in-game GUI <-> claude CLI",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--agent", default="default",
-                        help="Agent name (loads bridge/agents/{name}.json for identity)")
+    parser.add_argument("--agent", default=None,
+                        help="Single agent mode (loads bridge/agents/{name}.json)")
+    parser.add_argument("--group", default=None,
+                        help="Multi-agent mode: load all agents with this group name")
+    parser.add_argument("--agents", default=None,
+                        help="Multi-agent mode: comma-separated agent names")
     parser.add_argument("--rcon-host", default="localhost")
     parser.add_argument("--rcon-port", type=int, default=27015)
     parser.add_argument("--rcon-password", default="factorio")
@@ -318,8 +486,15 @@ def main():
     parser.add_argument("--relay-token", default=None)
     args = parser.parse_args()
 
-    # Load agent profile
-    agent = load_agent(args.agent)
+    # Multi-agent mode
+    if args.group or args.agents:
+        names = args.agents.split(",") if args.agents else None
+        profiles = discover_agents(group=args.group, names=names)
+        main_multi(args, profiles)
+        return
+
+    # Single-agent mode
+    agent = load_agent(args.agent or "default")
     agent_name = agent["name"]
     system_prompt = agent["system_prompt"]
 

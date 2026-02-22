@@ -32,7 +32,40 @@ def register_agent(rcon: RCONClient, agent_name: str):
     rcon.execute(lua)
 
 
-def check_mod_loaded(rcon: RCONClient) -> bool:
+def unregister_agent(rcon, agent_name: str):
+    encoded = lua_long_string(agent_name)
+    lua = f'/silent-command remote.call("claude_interface", "unregister_agent", {encoded})'
+    rcon.execute(lua)
+
+
+def pre_place_character(rcon, agent_name: str, planet: str) -> str:
+    """Create or teleport an agent's character to the specified planet surface.
+    Returns status: already_placed, teleported, created, surface_not_found, creation_failed."""
+    lua_code = (
+        'if not global then global = {} end '
+        'if not global.factorioctl_characters then global.factorioctl_characters = {} end '
+        f'local agent_id = "{agent_name}" '
+        f'local target_surface = game.surfaces["{planet}"] '
+        'if not target_surface then rcon.print("surface_not_found") return end '
+        'local c = global.factorioctl_characters[agent_id] '
+        'if c and c.valid then '
+        f'  if c.surface.name == "{planet}" then rcon.print("already_placed") return end '
+        '  c.teleport({0, 0}, target_surface) '
+        '  rcon.print("teleported") return '
+        'end '
+        'local new_char = target_surface.create_entity{name = "character", position = {0, 0}, force = game.forces.player} '
+        'if new_char then '
+        '  global.factorioctl_characters[agent_id] = new_char '
+        '  rcon.print("created") '
+        'else '
+        '  rcon.print("creation_failed") '
+        'end'
+    )
+    result = rcon.execute(f'/silent-command {lua_code}')
+    return result.strip()
+
+
+def check_mod_loaded(rcon) -> bool:
     result = rcon.execute(
         '/silent-command rcon.print(remote.interfaces["claude_interface"] and "yes" or "no")'
     )

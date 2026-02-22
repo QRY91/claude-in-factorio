@@ -420,7 +420,8 @@ local function register_agent(agent_name)
 end
 
 local function unregister_agent(agent_name)
-    if agent_name == "default" then return end  -- never remove default
+    -- Allow removing "default" only if other agents exist
+    if agent_name == "default" and #storage.agents <= 1 then return end
     local idx = nil
     for i, a in ipairs(storage.agents) do
         if a == agent_name then idx = i; break end

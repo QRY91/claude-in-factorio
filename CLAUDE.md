@@ -5,12 +5,12 @@
 ```
 claude-in-factorio/
 ├── bridge/               # Python bridge: in-game GUI ↔ claude CLI
-│   ├── pipe.py           # Main entry point
-│   ├── rcon.py           # RCON protocol client
-│   ├── transport.py      # File IPC + RCON responses
+│   ├── pipe.py           # Main entry point (single + multi-agent)
+│   ├── rcon.py           # RCON protocol client + ThreadSafeRCON
+│   ├── transport.py      # File IPC + RCON responses + character placement
 │   ├── telemetry.py      # SSE + relay telemetry
 │   ├── paths.py          # Auto-detect paths
-│   └── agents/           # Agent profiles (JSON)
+│   └── agents/           # Agent profiles (JSON, with planet/group fields)
 ├── mod/claude-interface/  # Factorio mod (in-game chat GUI)
 ├── relay/                # Cloudflare Worker for live telemetry
 ├── configs/              # Server and map-gen settings
@@ -43,14 +43,23 @@ tail -f logs/server.log      # View logs
 ## Running the Bridge
 
 ```bash
+# Single agent (default)
 python bridge/pipe.py
 
 # With a specific model
 python bridge/pipe.py --model sonnet
 
-# With a named agent
-python bridge/pipe.py --agent doug
+# Single named agent
+python bridge/pipe.py --agent doug-nauvis
+
+# Multi-agent: all agents in a group (one thread per agent)
+python bridge/pipe.py --group doug-squad
+
+# Multi-agent: specific agents
+python bridge/pipe.py --agents doug-nauvis,doug-vulcanus
 ```
+
+Multi-agent mode starts one thread per agent, shares a single RCON connection (thread-safe), and pre-places characters on their target planets. Session files are per-agent (`.session-{name}.json`).
 
 Relay URL and token auto-load from `bridge/.env`.
 

@@ -29,6 +29,14 @@
     "telemetry_name": {
       "type": "string",
       "description": "Display name in telemetry events. Defaults to name if not set."
+    },
+    "planet": {
+      "type": "string",
+      "description": "Factorio surface name to spawn the character on (e.g. nauvis, vulcanus). Defaults to nauvis."
+    },
+    "group": {
+      "type": "string",
+      "description": "Group name for multi-agent mode. Use --group to launch all agents with the same group."
     }
   },
   "additionalProperties": false
