@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event.schema.json",
+  "title": "Telemetry Event",
+  "description": "Event format for the bore relay. Sent via POST /ingest, fanned out via WebSocket to dashboard viewers.",
+  "type": "object",
+  "required": ["type", "agent", "timestamp", "data"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["chat", "tool_call", "tool_result", "error", "status"],
+      "description": "Event category"
+    },
+    "agent": {
+      "type": "string",
+      "description": "Agent identifier that produced this event"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp"
+    },
+    "tick": {
+      "type": ["integer", "null"],
+      "description": "Factorio game tick at event time, if available"
+    },
+    "data": {
+      "type": "object",
+      "description": "Event-specific payload",
+      "oneOf": [
+        {
+          "title": "chat",
+          "properties": {
+            "role": { "type": "string", "enum": ["player", "agent"] },
+            "message": { "type": "string" }
+          },
+          "required": ["role", "message"]
+        },
+        {
+          "title": "tool_call",
+          "properties": {
+            "tool": { "type": "string" },
+            "input": { "type": "object" }
+          },
+          "required": ["tool", "input"]
+        },
+        {
+          "title": "tool_result",
+          "properties": {
+            "tool": { "type": "string" },
+            "output": { "type": "string" }
+          },
+          "required": ["tool", "output"]
+        },
+        {
+          "title": "error",
+          "properties": {
+            "message": { "type": "string" }
+          },
+          "required": ["message"]
+        },
+        {
+          "title": "status",
+          "properties": {
+            "cost_usd": { "type": "number" },
+            "turns": { "type": "integer" },
+            "duration_ms": { "type": "integer" }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "session.schema.json",
+  "title": "Session Store",
+  "description": "Maps agent names to Claude CLI session IDs for conversation persistence across restarts",
+  "type": "object",
+  "additionalProperties": {
+    "type": "string",
+    "description": "Claude CLI session ID (e.g. ses_6162f7be9ffe...)"
+  },
+  "examples": [
+    {
+      "default": "ses_6162f7be9ffeGUFPFZbYd94Vz7",
+      "doug": "ses_616478f60ffeqU3ErJbmQY9y0w"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent.schema.json",
+  "title": "Agent Profile",
+  "description": "Defines an agent's identity, personality, and configuration for claude-in-factorio",
+  "type": "object",
+  "required": ["name", "system_prompt"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "description": "Agent identifier. Used as FACTORIO_AGENT_ID, session key, and telemetry tag."
+    },
+    "system_prompt": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Full system prompt sent to Claude. Defines the agent's personality and behavior."
+    },
+    "model": {
+      "type": "string",
+      "description": "Claude model override (e.g. sonnet, opus, haiku). CLI --model flag takes precedence."
+    },
+    "max_turns": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "description": "Max tool-use turns per message. CLI --max-turns flag takes precedence."
+    },
+    "telemetry_name": {
+      "type": "string",
+      "description": "Display name in telemetry events. Defaults to name if not set."
+    }
+  },
+  "additionalProperties": false
+}

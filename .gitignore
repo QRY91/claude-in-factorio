@@ -11,8 +11,11 @@ logs/
 # factorioctl (cloned separately)
 factorioctl/
 
-# Generated MCP configs
-bridge/.mcp-config.json
+# Generated MCP configs (per-agent)
+bridge/.mcp-config*.json
+
+# Session persistence (runtime)
+bridge/.sessions.json
 
 # Python
 __pycache__/

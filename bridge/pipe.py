@@ -9,7 +9,7 @@ the response back via RCON.
 No SDK, no API client, no tool definitions. Just plumbing.
 
 Usage:
-    python pipe.py [--model sonnet] [--rcon-port 27015] [--max-turns 15]
+    python pipe.py [--agent doug] [--model sonnet] [--rcon-port 27015]
 """
 
 import argparse
@@ -39,8 +39,11 @@ from paths import find_script_output, find_factorioctl_mcp
 from transport import InputWatcher, send_response, send_tool_status, set_status, check_mod_loaded
 from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, Telemetry, emit_chat, emit_tool_call, emit_error, emit_status
 
+_BRIDGE_DIR = Path(__file__).resolve().parent
+SESSIONS_FILE = _BRIDGE_DIR / ".sessions.json"
 
-SYSTEM_PROMPT = """\
+# Fallback system prompt when no agent profile exists
+_DEFAULT_SYSTEM_PROMPT = """\
 You are Claude, an AI agent embedded in a Factorio game. \
 The player is chatting with you through an in-game GUI panel.
 
@@ -58,7 +61,58 @@ Guidelines:
 """
 
 
-def write_mcp_config(mcp_bin: str, rcon_host: str, rcon_port: int, rcon_password: str) -> Path:
+# ── Agent profiles ───────────────────────────────────────────
+
+def load_agent(agent_name: str) -> dict:
+    """Load and validate agent profile from bridge/agents/{name}.json."""
+    agent_file = _BRIDGE_DIR / "agents" / f"{agent_name}.json"
+    if not agent_file.exists():
+        if agent_name == "default":
+            return {"name": "default", "system_prompt": _DEFAULT_SYSTEM_PROMPT}
+        raise FileNotFoundError(
+            f"Agent profile not found: {agent_file}\n"
+            f"Create it or use --agent default"
+        )
+    agent = json.loads(agent_file.read_text())
+    # Validate required fields (per agent.schema.json)
+    if not isinstance(agent.get("name"), str) or not agent["name"]:
+        raise ValueError(f"Agent profile missing 'name': {agent_file}")
+    if not isinstance(agent.get("system_prompt"), str) or not agent["system_prompt"]:
+        raise ValueError(f"Agent profile missing 'system_prompt': {agent_file}")
+    return agent
+
+
+# ── Session persistence ──────────────────────────────────────
+
+def load_session(agent_name: str) -> str | None:
+    """Load persisted session ID for an agent."""
+    if not SESSIONS_FILE.exists():
+        return None
+    try:
+        data = json.loads(SESSIONS_FILE.read_text())
+        return data.get(agent_name)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def save_session(agent_name: str, session_id: str):
+    """Persist session ID for an agent."""
+    data = {}
+    if SESSIONS_FILE.exists():
+        try:
+            data = json.loads(SESSIONS_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    data[agent_name] = session_id
+    SESSIONS_FILE.write_text(json.dumps(data, indent=2) + "\n")
+
+
+# ── MCP config ───────────────────────────────────────────────
+
+def write_mcp_config(
+    mcp_bin: str, rcon_host: str, rcon_port: int,
+    rcon_password: str, agent_id: str = "default",
+) -> Path:
     """Write a temporary MCP config JSON for claude CLI."""
     config = {
         "mcpServers": {
@@ -69,18 +123,22 @@ def write_mcp_config(mcp_bin: str, rcon_host: str, rcon_port: int, rcon_password
                     "FACTORIO_RCON_HOST": rcon_host,
                     "FACTORIO_RCON_PORT": str(rcon_port),
                     "FACTORIO_RCON_PASSWORD": rcon_password,
+                    "FACTORIO_AGENT_ID": agent_id,
                 },
             }
         }
     }
-    config_path = Path(__file__).parent / ".mcp-config.json"
+    config_path = _BRIDGE_DIR / f".mcp-config-{agent_id}.json"
     config_path.write_text(json.dumps(config))
     return config_path
 
 
+# ── Claude CLI ───────────────────────────────────────────────
+
 def build_claude_cmd(
     prompt: str,
     mcp_config: Path,
+    system_prompt: str,
     session_id: str | None = None,
     model: str | None = None,
     max_turns: int = 15,
@@ -92,7 +150,7 @@ def build_claude_cmd(
         "--verbose",
         "--permission-mode", "bypassPermissions",
         "--mcp-config", str(mcp_config),
-        "--system-prompt", SYSTEM_PROMPT,
+        "--system-prompt", system_prompt,
         "--max-turns", str(max_turns),
     ]
     if model:
@@ -112,15 +170,17 @@ def _ts():
 def handle_message(
     prompt: str,
     mcp_config: Path,
+    system_prompt: str,
     session_id: str | None,
     rcon: RCONClient,
     player_index: int,
     telemetry: Telemetry | None,
+    agent_name: str = "default",
     model: str | None = None,
     max_turns: int = 15,
 ) -> str | None:
     """Pipe a message through claude CLI. Returns new session_id."""
-    cmd = build_claude_cmd(prompt, mcp_config, session_id, model, max_turns)
+    cmd = build_claude_cmd(prompt, mcp_config, system_prompt, session_id, model, max_turns)
 
     resume_tag = f" (resume {session_id[:8]}...)" if session_id else " (new session)"
     print(f"  [{_ts()}] Spawning claude{resume_tag}")
@@ -172,7 +232,7 @@ def handle_message(
                     if len(input_summary) > 80:
                         input_summary = input_summary[:77] + "..."
                     print(f"  [{_ts()}] tool: {display}({input_summary})")
-                    emit_tool_call(telemetry, display, tool_input)
+                    emit_tool_call(telemetry, display, tool_input, agent=agent_name)
                     try:
                         send_tool_status(rcon, player_index, display)
                     except Exception:
@@ -202,7 +262,7 @@ def handle_message(
                     "cost_usd": cost,
                     "turns": turns,
                     "duration_ms": duration,
-                })
+                }, agent=agent_name)
 
     proc.wait()
 
@@ -211,7 +271,7 @@ def handle_message(
         if stderr and not text_parts:
             error_msg = f"Error: {stderr[:200]}"
             print(f"[Error] {stderr.strip()}")
-            emit_error(telemetry, error_msg)
+            emit_error(telemetry, error_msg, agent=agent_name)
             send_response(rcon, player_index, error_msg)
             set_status(rcon, player_index, "[color=0.4,0.8,0.4]Ready[/color]")
             return new_session_id
@@ -220,12 +280,14 @@ def handle_message(
     reply = "\n\n".join(text_parts) if text_parts else "(action complete)"
     reply = reply.replace("**", "").replace("```", "").replace("##", "")
 
-    print(f"[Claude] {reply}\n")
-    emit_chat(telemetry, "agent", reply)
+    print(f"[{agent_name}] {reply}\n")
+    emit_chat(telemetry, "agent", reply, agent=agent_name)
     send_response(rcon, player_index, reply)
 
     return new_session_id
 
+
+# ── Telemetry ────────────────────────────────────────────────
 
 def build_telemetry(args) -> Telemetry | None:
     """Wire up telemetry from CLI args."""
@@ -254,17 +316,21 @@ def build_telemetry(args) -> Telemetry | None:
     return None
 
 
+# ── Main ─────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser(
         description="Thin pipe: Factorio in-game GUI <-> claude CLI",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument("--agent", default="default",
+                        help="Agent name (loads bridge/agents/{name}.json for identity)")
     parser.add_argument("--rcon-host", default="localhost")
     parser.add_argument("--rcon-port", type=int, default=27015)
     parser.add_argument("--rcon-password", default="factorio")
     parser.add_argument("--script-output", default=None)
     parser.add_argument("--model", default=None, help="Claude model (e.g. sonnet, opus, haiku)")
-    parser.add_argument("--max-turns", type=int, default=15, help="Max tool-use turns per message")
+    parser.add_argument("--max-turns", type=int, default=None, help="Max tool-use turns per message")
     parser.add_argument("--poll-interval", type=float, default=0.5)
     parser.add_argument("--factorioctl-mcp", default=None)
     parser.add_argument("--sse", action="store_true")
@@ -272,6 +338,19 @@ def main():
     parser.add_argument("--relay", default=None)
     parser.add_argument("--relay-token", default=None)
     args = parser.parse_args()
+
+    # Load agent profile
+    agent = load_agent(args.agent)
+    agent_name = agent["name"]
+    system_prompt = agent["system_prompt"]
+
+    # CLI flags override agent profile
+    model = args.model or agent.get("model")
+    max_turns = args.max_turns or agent.get("max_turns", 15)
+    telemetry_name = agent.get("telemetry_name", agent_name)
+
+    # Load persisted session
+    session_id = load_session(agent_name)
 
     # Resolve paths
     script_output = Path(args.script_output) if args.script_output else find_script_output()
@@ -281,11 +360,16 @@ def main():
     input_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Banner
-    print("Claude-in-Factorio — Thin Pipe")
+    print(f"Claude-in-Factorio — {agent_name}")
+    print(f"  Agent:       {agent_name}")
     print(f"  RCON:        {args.rcon_host}:{args.rcon_port}")
     print(f"  Input:       {input_file}")
-    if args.model:
-        print(f"  Model:       {args.model}")
+    if session_id:
+        print(f"  Session:     {session_id[:12]}... (resumed)")
+    else:
+        print(f"  Session:     (new)")
+    if model:
+        print(f"  Model:       {model}")
     if mcp_bin:
         print(f"  MCP server:  {mcp_bin}")
     else:
@@ -306,15 +390,15 @@ def main():
     # MCP config
     mcp_config = None
     if mcp_bin:
-        mcp_config = write_mcp_config(mcp_bin, args.rcon_host, args.rcon_port, args.rcon_password)
+        mcp_config = write_mcp_config(
+            mcp_bin, args.rcon_host, args.rcon_port,
+            args.rcon_password, agent_id=agent_name,
+        )
 
     # Watcher
     watcher = InputWatcher(input_file)
 
-    # Per-player sessions
-    sessions: dict[int, str] = {}
-
-    print("\nWatching for messages... (Ctrl+C to stop)\n")
+    print(f"\nWatching for messages... (Ctrl+C to stop)\n")
 
     try:
         while True:
@@ -326,7 +410,7 @@ def main():
                 message = msg["message"]
 
                 print(f"[{player_name}] {message}")
-                emit_chat(telemetry, "player", message)
+                emit_chat(telemetry, "player", message, agent=telemetry_name)
 
                 try:
                     set_status(rcon, player_index, "[color=1,0.8,0.2]Thinking...[/color]")
@@ -338,12 +422,14 @@ def main():
                     continue
 
                 new_session = handle_message(
-                    message, mcp_config, sessions.get(player_index),
+                    message, mcp_config, system_prompt, session_id,
                     rcon, player_index, telemetry,
-                    model=args.model, max_turns=args.max_turns,
+                    agent_name=telemetry_name, model=model,
+                    max_turns=max_turns,
                 )
                 if new_session:
-                    sessions[player_index] = new_session
+                    session_id = new_session
+                    save_session(agent_name, session_id)
 
     except KeyboardInterrupt:
         print("\nShutting down...")
