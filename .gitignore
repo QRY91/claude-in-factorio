@@ -11,6 +11,9 @@ logs/
 # factorioctl (cloned separately)
 factorioctl/
 
+# Generated MCP configs
+bridge/.mcp-config.json
+
 # Python
 __pycache__/
 *.pyc
