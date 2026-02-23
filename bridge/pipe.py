@@ -55,8 +55,16 @@ def _kill_all_subprocesses():
         _active_procs.clear()
 
 
+_shutdown_requested = False
+
 def _shutdown_handler(signum, frame):
     """Handle SIGINT/SIGTERM: kill subprocesses and exit."""
+    global _shutdown_requested
+    if _shutdown_requested:
+        # Second signal — daemon threads may be blocking Python shutdown
+        print("\nForce quit.")
+        os._exit(1)
+    _shutdown_requested = True
     _kill_all_subprocesses()
     print("\nShutting down...")
     sys.exit(130 if signum == signal.SIGINT else 143)
@@ -618,6 +626,12 @@ class AgentThread:
     def _run(self):
         while True:
             msg = self.inbox.get()
+            try:
+                self._process_message(msg)
+            finally:
+                self.inbox.task_done()
+
+    def _process_message(self, msg: dict):
             player_index = msg.get("player_index", 1)
             player_name = msg.get("player_name", "Player")
             message = msg["message"]
@@ -641,7 +655,7 @@ class AgentThread:
                 if player_index > 0:
                     send_response(self.rcon, player_index, rcon_target,
                                   "Error: factorioctl MCP not found")
-                continue
+                return
 
             new_session = handle_message(
                 message, self.mcp_config, self.system_prompt, self.session_id,
@@ -740,6 +754,30 @@ class AgentThread:
         })
 
 
+def _start_supervisor_heartbeat(supervisor: 'AgentThread', interval: float):
+    """Periodically wake the supervisor to check on workers and decide next actions."""
+    def _loop():
+        time.sleep(10)  # let workers start up
+        supervisor.enqueue({
+            "message": "Begin operations. Survey available workers via list_agents, observe current game state, and dispatch the first task.",
+            "player_index": 0,
+            "player_name": "system",
+            "target_agent": supervisor.agent_name,
+        })
+        while True:
+            supervisor.inbox.join()  # wait for current work to finish
+            time.sleep(interval)
+            supervisor.enqueue({
+                "message": "Heartbeat: check worker progress via get_agent_activity, verify game state, decide next actions.",
+                "player_index": 0,
+                "player_name": "heartbeat",
+                "target_agent": supervisor.agent_name,
+            })
+    t = threading.Thread(target=_loop, name="supervisor-heartbeat", daemon=True)
+    t.start()
+    print(f"  [{_ts()}] Supervisor heartbeat: every {interval}s")
+
+
 def main_multi(args, agent_profiles: list[dict]):
     """Multi-agent mode: one thread per agent, shared watcher."""
     # Shared RCON (thread-safe)
@@ -775,6 +813,9 @@ def main_multi(args, agent_profiles: list[dict]):
     # Pre-place characters on correct planets (offset to avoid overlapping with player)
     print("\nPre-placing characters...")
     for i, agent in enumerate(agent_profiles):
+        if agent.get("no_character"):
+            print(f"  {agent['name']} -> no character (supervisor)")
+            continue
         planet = agent.get("planet", "nauvis")
         result = pre_place_character(rcon, agent["name"], planet, spawn_offset=i)
         print(f"  {agent['name']} -> {planet}: {result}")
@@ -801,7 +842,8 @@ def main_multi(args, agent_profiles: list[dict]):
                 mcp_bin, args.rcon_host, args.rcon_port,
                 args.rcon_password, agent_id=agent["name"],
             )
-        at = AgentThread(agent, mcp_config, rcon, telemetry, args.model, sandbox=sandbox)
+        agent_sandbox = agent.get("sandbox", sandbox)  # per-agent override
+        at = AgentThread(agent, mcp_config, rcon, telemetry, args.model, sandbox=agent_sandbox)
         agents[agent["name"]] = at
 
     # Resolve paths and start watcher
@@ -822,28 +864,38 @@ def main_multi(args, agent_profiles: list[dict]):
 
     # Start agent threads with staggered delays to avoid RCON flood
     stagger = args.stagger_delay
+    has_supervisor = any(a.get("role") == "supervisor" for a in agent_profiles)
     print(f"\nStarting agents (stagger: {stagger}s)...")
     for i, at in enumerate(agents.values()):
         at.start()
-        print(f"  [{_ts()}] {at.agent_name} online")
+        role_tag = " [supervisor]" if at.agent.get("role") == "supervisor" else ""
+        print(f"  [{_ts()}] {at.agent_name} online{role_tag}")
         if stagger > 0 and i < len(agents) - 1:
             time.sleep(stagger)
 
-    # Load and dispatch task chains
-    chains = load_all_task_chains()
-    for agent_name, chain in chains.items():
-        if agent_name in agents:
-            agents[agent_name].task_chain = chain
-            task = chain.current_task
-            if task:
-                print(f"  [{_ts()}] Chain: {agent_name} — {len(chain.chain)} tasks, starting at #{chain.current_index} ({task['id']})")
-                agents[agent_name].enqueue({
-                    "message": task["prompt"],
-                    "player_index": 0,
-                    "player_name": "chain",
-                    "target_agent": agent_name,
-                    "_chain_task_id": task["id"],
-                })
+    # Load and dispatch task chains (skipped when supervisor is present)
+    if has_supervisor:
+        print(f"  [{_ts()}] Supervisor active — static task chains disabled")
+        # Start supervisor heartbeat
+        for name, at in agents.items():
+            if at.agent.get("role") == "supervisor":
+                interval = at.agent.get("heartbeat_seconds", 90)
+                _start_supervisor_heartbeat(at, interval)
+    else:
+        chains = load_all_task_chains()
+        for agent_name, chain in chains.items():
+            if agent_name in agents:
+                agents[agent_name].task_chain = chain
+                task = chain.current_task
+                if task:
+                    print(f"  [{_ts()}] Chain: {agent_name} — {len(chain.chain)} tasks, starting at #{chain.current_index} ({task['id']})")
+                    agents[agent_name].enqueue({
+                        "message": task["prompt"],
+                        "player_index": 0,
+                        "player_name": "chain",
+                        "target_agent": agent_name,
+                        "_chain_task_id": task["id"],
+                    })
 
     print(f"\nWatching for messages... (Ctrl+C to stop)\n")
 
@@ -933,6 +985,8 @@ def main():
                         help="Put the human player into spectator mode (no character body)")
     parser.add_argument("--no-sandbox", action="store_true",
                         help="Disable tool sandboxing (allows Bash/Edit/Read — use for supervisor only)")
+    parser.add_argument("--supervisor", action="store_true",
+                        help="Include supervisor agent for live orchestration (replaces static task chain)")
     parser.add_argument("--log-dir", default=None,
                         help="Directory for bridge run logs (default: logs/)")
     parser.add_argument("--sync-mod", action="store_true",
@@ -955,12 +1009,19 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown_handler)
 
     # Multi-agent mode
-    if args.group or args.agents or args.scale:
+    if args.group or args.agents or args.scale or args.supervisor:
         names = args.agents.split(",") if args.agents else None
         group = args.group or "doug-squad"
         profiles = discover_agents(group=group, names=names)
         if args.scale:
             profiles = profiles[:args.scale]
+        if args.supervisor:
+            try:
+                sup = load_agent("doug-supervisor")
+                profiles.append(sup)
+            except FileNotFoundError:
+                print("ERROR: supervisor profile not found at bridge/agents/doug-supervisor.json")
+                sys.exit(1)
         main_multi(args, profiles)
         return
 

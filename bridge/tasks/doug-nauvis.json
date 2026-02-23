@@ -319,8 +319,14 @@
     }
   ],
   "loop": false,
-  "current_index": 3,
+  "current_index": 11,
   "retry_counts": {
-    "craft-mining-drills": 1
+    "craft-mining-drills": 1,
+    "copper-drill": 1,
+    "steam-power": 4,
+    "research-lab": 3,
+    "red-science-and-automation": 4,
+    "research-logistics": 4,
+    "first-assembler": 3
   }
 }
