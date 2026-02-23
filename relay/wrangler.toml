@@ -16,5 +16,6 @@ new_sqlite_classes = ["BoreRelay"]
 #   RELAY_TOKEN=your-secret-token
 
 [vars]
-# Optional: configure max buffer size (events kept for late joiners)
-BUFFER_SIZE = "100"
+# In-memory cache size (late joiners get these immediately).
+# Full history is in SQLite (last 5000 events), served on WS connect.
+BUFFER_SIZE = "200"

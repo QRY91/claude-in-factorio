@@ -3,7 +3,7 @@
  *
  * Accepts events from the bridge via POST /ingest (authenticated),
  * fans them out to dashboard viewers via WebSocket on GET /ws.
- * Buffers recent events so late joiners see history.
+ * Persists events in SQLite so history survives DO eviction and deploys.
  */
 
 interface Env {
@@ -58,27 +58,57 @@ export default {
 
 export class BoreRelay implements DurableObject {
   private clients: Set<WebSocket> = new Set();
-  private buffer: string[] = [];
-  private maxBuffer: number;
-  private lastEventTime: number = 0;
+  private cache: string[] = [];
+  private maxCache: number;
+  private initialized = false;
 
-  constructor(private state: DurableObjectState, private env: Env) {
-    this.maxBuffer = parseInt(env.BUFFER_SIZE || "100", 10);
+  constructor(private ctx: DurableObjectState, private env: Env) {
+    this.maxCache = parseInt(env.BUFFER_SIZE || "200", 10);
+  }
+
+  private ensureTable() {
+    if (this.initialized) return;
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        data TEXT NOT NULL,
+        ts INTEGER NOT NULL
+      )
+    `);
+    this.initialized = true;
+  }
+
+  private hydrate() {
+    this.ensureTable();
+    if (this.cache.length > 0) return;
+    const rows = this.ctx.storage.sql.exec(
+      `SELECT data FROM events ORDER BY id DESC LIMIT ?`,
+      this.maxCache
+    );
+    const results: string[] = [];
+    for (const row of rows) {
+      results.push(row.data as string);
+    }
+    this.cache = results.reverse();
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
+      this.ensureTable();
+      const countRow = [...this.ctx.storage.sql.exec(`SELECT COUNT(*) as c FROM events`)];
+      const total = countRow[0]?.c ?? 0;
       return json({
         status: "ok",
         clients: this.clients.size,
-        buffered: this.buffer.length,
-        last_event: this.lastEventTime || null,
+        cached: this.cache.length,
+        total_events: total,
       });
     }
 
     if (url.pathname === "/ingest") {
+      this.ensureTable();
       let events: unknown[];
       try {
         const body = await request.json();
@@ -87,15 +117,23 @@ export class BoreRelay implements DurableObject {
         return new Response("Bad JSON", { status: 400 });
       }
 
+      const now = Date.now();
       for (const event of events) {
         const data = JSON.stringify(event);
-        this.buffer.push(data);
-        if (this.buffer.length > this.maxBuffer) {
-          this.buffer.shift();
-        }
-        this.lastEventTime = Date.now();
 
-        // Fan out to all connected viewers
+        // Persist to SQLite
+        this.ctx.storage.sql.exec(
+          `INSERT INTO events (data, ts) VALUES (?, ?)`,
+          data, now
+        );
+
+        // Update in-memory cache
+        this.cache.push(data);
+        if (this.cache.length > this.maxCache) {
+          this.cache.shift();
+        }
+
+        // Fan out to connected viewers
         const dead: WebSocket[] = [];
         for (const ws of this.clients) {
           try {
@@ -109,18 +147,24 @@ export class BoreRelay implements DurableObject {
         }
       }
 
+      // Prune old events (keep last 5000)
+      this.ctx.storage.sql.exec(
+        `DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 5000)`
+      );
+
       return json({ accepted: events.length, clients: this.clients.size });
     }
 
     if (url.pathname === "/ws") {
+      this.hydrate();
       const pair = new WebSocketPair();
       const [client, server] = [pair[0], pair[1]];
 
       server.accept();
       this.clients.add(server);
 
-      // Send buffered events to late joiner
-      for (const event of this.buffer) {
+      // Replay history to late joiner
+      for (const event of this.cache) {
         try {
           server.send(event);
         } catch {
