@@ -581,7 +581,8 @@ class AgentThread:
             target_label = response_to or self.agent_name
             print(f"[{player_name} -> {target_label}:{self.agent_name}] {message}" if response_to
                   else f"[{player_name} -> {self.agent_name}] {message}")
-            emit_chat(self.telemetry, "player", message, agent=self.telemetry_name)
+            chat_role = "directive" if msg.get("_chain_task_id") else "player"
+            emit_chat(self.telemetry, chat_role, message, agent=self.telemetry_name)
 
             # player_index=0 means injected message (supervisor/API), skip GUI updates
             if player_index > 0:
@@ -968,7 +969,8 @@ def main():
                 message = msg["message"]
 
                 print(f"[{player_name} -> {agent_name}] {message}")
-                emit_chat(telemetry, "player", message, agent=telemetry_name)
+                chat_role = "directive" if msg.get("_chain_task_id") else "player"
+                emit_chat(telemetry, chat_role, message, agent=telemetry_name)
 
                 if player_index > 0:
                     try:
