@@ -112,6 +112,31 @@ from taskchain import load_all_task_chains, TaskChain
 
 _BRIDGE_DIR = Path(__file__).resolve().parent
 SESSIONS_FILE = _BRIDGE_DIR / ".sessions.json"
+_BINARY_HASH_FILE = _BRIDGE_DIR / ".factorioctl-hash"
+
+
+def verify_binary_integrity(mcp_bin: str | None) -> bool:
+    """Verify factorioctl binary hasn't been modified since last run.
+    Returns True if OK, False if tampered. Records hash on first run."""
+    if not mcp_bin:
+        return True
+    import hashlib
+    path = Path(mcp_bin)
+    if not path.is_file():
+        return True
+    current_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    if _BINARY_HASH_FILE.exists():
+        stored_hash = _BINARY_HASH_FILE.read_text().strip()
+        if stored_hash != current_hash:
+            print(f"WARNING: factorioctl binary hash changed!")
+            print(f"  Expected: {stored_hash[:16]}...")
+            print(f"  Got:      {current_hash[:16]}...")
+            print(f"  Binary may have been modified by an agent or external process.")
+            print(f"  To accept the new binary, delete {_BINARY_HASH_FILE}")
+            return False
+    # Record current hash
+    _BINARY_HASH_FILE.write_text(current_hash + "\n")
+    return True
 
 # ── Agent profiles ───────────────────────────────────────────
 
@@ -294,6 +319,12 @@ def write_mcp_config(
 
 # ── Claude CLI ───────────────────────────────────────────────
 
+AGENT_DISALLOWED_TOOLS = [
+    "Bash", "Edit", "Write", "Read", "Grep", "Glob",
+    "Task", "NotebookEdit", "WebFetch", "WebSearch",
+]
+
+
 def build_claude_cmd(
     prompt: str,
     mcp_config: Path,
@@ -301,8 +332,13 @@ def build_claude_cmd(
     session_id: str | None = None,
     model: str | None = None,
     max_turns: int = 15,
+    sandbox: bool = True,
 ) -> list[str]:
-    """Build the claude CLI command."""
+    """Build the claude CLI command.
+
+    sandbox=True (default) blocks filesystem/shell tools, restricting
+    the agent to MCP tools only. Set sandbox=False for supervisor sessions.
+    """
     cmd = [
         "claude", "-p",
         "--output-format", "stream-json",
@@ -314,6 +350,8 @@ def build_claude_cmd(
         "--system-prompt", system_prompt,
         "--max-turns", str(max_turns),
     ]
+    if sandbox:
+        cmd.extend(["--disallowedTools", ",".join(AGENT_DISALLOWED_TOOLS)])
     if model:
         cmd.extend(["--model", model])
     if session_id:
@@ -340,14 +378,16 @@ def handle_message(
     response_to: str | None = None,
     model: str | None = None,
     max_turns: int = 15,
+    sandbox: bool = True,
 ) -> str | None:
     """Pipe a message through claude CLI. Returns new session_id.
     agent_name: registered agent name (for RCON/mod).
     telemetry_name: display name for telemetry/logs (defaults to agent_name).
-    response_to: if set, send response to this tab instead of agent_name (group chat)."""
+    response_to: if set, send response to this tab instead of agent_name (group chat).
+    sandbox: if True, block filesystem/shell tools (Bash, Edit, Read, etc.)."""
     tname = telemetry_name or agent_name
     rcon_target = response_to or agent_name
-    cmd = build_claude_cmd(prompt, mcp_config, system_prompt, session_id, model, max_turns)
+    cmd = build_claude_cmd(prompt, mcp_config, system_prompt, session_id, model, max_turns, sandbox=sandbox)
 
     resume_tag = f" (resume {session_id[:8]}...)" if session_id else " (new session)"
     print(f"  [{_ts()}] Spawning claude{resume_tag}")
@@ -547,7 +587,8 @@ class AgentThread:
     """Manages one agent's claude CLI sessions in a dedicated thread."""
 
     def __init__(self, agent: dict, mcp_config: Path | None, rcon,
-                 telemetry: 'Telemetry | None', model: str | None):
+                 telemetry: 'Telemetry | None', model: str | None,
+                 sandbox: bool = True):
         self.agent = agent
         self.agent_name = agent["name"]
         self.system_prompt = agent["system_prompt"]
@@ -557,6 +598,7 @@ class AgentThread:
         self.mcp_config = mcp_config
         self.rcon = rcon
         self.telemetry = telemetry
+        self.sandbox = sandbox
         self.session_id = load_session(self.agent_name)
         self.task_chain: TaskChain | None = None
         self.inbox: queue.Queue = queue.Queue()
@@ -603,6 +645,7 @@ class AgentThread:
                 self.rcon, player_index, self.telemetry,
                 agent_name=self.agent_name, telemetry_name=self.telemetry_name,
                 response_to=response_to, model=self.model, max_turns=self.max_turns,
+                sandbox=self.sandbox,
             )
             if new_session:
                 self.session_id = new_session
@@ -705,6 +748,10 @@ def main_multi(args, agent_profiles: list[dict]):
 
     # MCP configs and agent threads
     mcp_bin = args.factorioctl_mcp or find_factorioctl_mcp()
+    if not verify_binary_integrity(mcp_bin):
+        print("FATAL: Binary integrity check failed. Aborting.")
+        sys.exit(1)
+    sandbox = not args.no_sandbox
     agents: dict[str, AgentThread] = {}
     for agent in agent_profiles:
         mcp_config = None
@@ -713,7 +760,7 @@ def main_multi(args, agent_profiles: list[dict]):
                 mcp_bin, args.rcon_host, args.rcon_port,
                 args.rcon_password, agent_id=agent["name"],
             )
-        at = AgentThread(agent, mcp_config, rcon, telemetry, args.model)
+        at = AgentThread(agent, mcp_config, rcon, telemetry, args.model, sandbox=sandbox)
         agents[agent["name"]] = at
 
     # Resolve paths and start watcher
@@ -728,6 +775,7 @@ def main_multi(args, agent_profiles: list[dict]):
     print(f"  Agents:      {agent_names}")
     print(f"  RCON:        {args.rcon_host}:{args.rcon_port}")
     print(f"  Input:       {input_file}")
+    print(f"  Sandbox:     {'ON — agents restricted to MCP tools' if sandbox else 'OFF — agents have full tool access'}")
     if mcp_bin:
         print(f"  MCP server:  {mcp_bin}")
 
@@ -764,10 +812,15 @@ def main_multi(args, agent_profiles: list[dict]):
             for msg in watcher.poll():
                 target = msg.get("target_agent", "default")
                 if target == "all":
-                    # Fan out to all agents with staggered delivery
-                    for i, at in enumerate(agents.values()):
+                    # Fan out to all agents except sender (prevent self-routing)
+                    sender = msg.get("player_name", "")
+                    fan_targets = [
+                        at for name, at in agents.items()
+                        if name != sender  # don't route back to sender
+                    ]
+                    for i, at in enumerate(fan_targets):
                         at.enqueue({**msg, "response_to": "all"})
-                        if i < len(agents) - 1:
+                        if i < len(fan_targets) - 1:
                             time.sleep(1)  # stagger to avoid RCON flood
                 elif target in agents:
                     agents[target].enqueue(msg)
@@ -837,6 +890,8 @@ def main():
                         help="Seconds between agent startups to avoid RCON flood (0=instant)")
     parser.add_argument("--spectator", action="store_true",
                         help="Put the human player into spectator mode (no character body)")
+    parser.add_argument("--no-sandbox", action="store_true",
+                        help="Disable tool sandboxing (allows Bash/Edit/Read — use for supervisor only)")
     parser.add_argument("--log-dir", default=None,
                         help="Directory for bridge run logs (default: logs/)")
     parser.add_argument("--sync-mod", action="store_true",
@@ -884,6 +939,9 @@ def main():
     # Resolve paths
     script_output = Path(args.script_output) if args.script_output else find_script_output()
     mcp_bin = args.factorioctl_mcp or find_factorioctl_mcp()
+    if not verify_binary_integrity(mcp_bin):
+        print("FATAL: Binary integrity check failed. Aborting.")
+        sys.exit(1)
 
     input_file = script_output / "claude-chat" / "input.jsonl"
     input_file.parent.mkdir(parents=True, exist_ok=True)
@@ -899,6 +957,8 @@ def main():
         print(f"  Session:     (new)")
     if model:
         print(f"  Model:       {model}")
+    sandbox = not args.no_sandbox
+    print(f"  Sandbox:     {'ON — agent restricted to MCP tools' if sandbox else 'OFF — agent has full tool access'}")
     if mcp_bin:
         print(f"  MCP server:  {mcp_bin}")
     else:
@@ -988,6 +1048,7 @@ def main():
                     rcon, player_index, telemetry,
                     agent_name=agent_name, telemetry_name=telemetry_name,
                     model=model, max_turns=max_turns,
+                    sandbox=sandbox,
                 )
                 if new_session:
                     session_id = new_session

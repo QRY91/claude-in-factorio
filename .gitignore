@@ -18,6 +18,9 @@ bridge/.mcp-config*.json
 bridge/.sessions.json
 bridge/.session-*.json
 
+# Binary integrity hash (runtime)
+bridge/.factorioctl-hash
+
 # Python
 __pycache__/
 *.pyc

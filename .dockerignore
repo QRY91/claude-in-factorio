@@ -1,0 +1,17 @@
+.git
+.factorio-server
+.factorio-server-data
+saves/
+logs/
+configs/
+relay/
+*.log
+*.session-*.json
+.mcp-config-*.json
+.agent_memory.json
+bridge/.env
+bridge/.session-*.json
+bridge/.mcp-config-*.json
+factorioctl/target/debug/
+factorioctl/target/.rustc_info.json
+factorioctl/.git
