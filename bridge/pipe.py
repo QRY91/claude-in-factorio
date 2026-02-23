@@ -364,7 +364,8 @@ def handle_message(
             _active_procs.append(proc)
     except FileNotFoundError:
         print("[Error] 'claude' CLI not found. Install: npm install -g @anthropic-ai/claude-code")
-        send_response(rcon, player_index, rcon_target, "Error: claude CLI not installed")
+        if player_index > 0:
+            send_response(rcon, player_index, rcon_target, "Error: claude CLI not installed")
         return session_id
 
     text_parts = []
@@ -406,7 +407,8 @@ def handle_message(
                         if thought:
                             emit_chat(telemetry, "agent", thought, agent=tname)
                     # Send tool status to agent's own tab (not to group chat "all" tab)
-                    if not tool_name.startswith("mcp__") or tool_name.startswith("mcp__factorioctl__"):
+                    # Skip for injected messages (player_index=0) — no GUI to update
+                    if player_index > 0 and (not tool_name.startswith("mcp__") or tool_name.startswith("mcp__factorioctl__")):
                         try:
                             send_tool_status(rcon, player_index, agent_name, display)
                         except Exception:
@@ -455,8 +457,9 @@ def handle_message(
             error_msg = f"Error: {stderr[:200]}"
             print(f"[Error] {stderr.strip()}")
             emit_error(telemetry, error_msg, agent=tname)
-            send_response(rcon, player_index, rcon_target, error_msg)
-            set_status(rcon, player_index, "[color=0.4,0.8,0.4]Ready[/color]")
+            if player_index > 0:
+                send_response(rcon, player_index, rcon_target, error_msg)
+                set_status(rcon, player_index, "[color=0.4,0.8,0.4]Ready[/color]")
             return new_session_id
 
     # Send response — join all text parts so intermediate messages aren't lost
@@ -469,7 +472,8 @@ def handle_message(
     # For group chat, prefix reply with agent name so reader knows who said what
     if response_to:
         reply = f"[color=1,0.6,0.2]{tname}:[/color] {reply}"
-    send_response(rcon, player_index, rcon_target, reply)
+    if player_index > 0:
+        send_response(rcon, player_index, rcon_target, reply)
 
     return new_session_id
 
@@ -577,15 +581,18 @@ class AgentThread:
                   else f"[{player_name} -> {self.agent_name}] {message}")
             emit_chat(self.telemetry, "player", message, agent=self.telemetry_name)
 
-            try:
-                set_status(self.rcon, player_index, "[color=1,0.8,0.2]Thinking...[/color]")
-            except Exception:
-                pass
+            # player_index=0 means injected message (supervisor/API), skip GUI updates
+            if player_index > 0:
+                try:
+                    set_status(self.rcon, player_index, "[color=1,0.8,0.2]Thinking...[/color]")
+                except Exception:
+                    pass
 
             if not self.mcp_config:
                 rcon_target = response_to or self.agent_name
-                send_response(self.rcon, player_index, rcon_target,
-                              "Error: factorioctl MCP not found")
+                if player_index > 0:
+                    send_response(self.rcon, player_index, rcon_target,
+                                  "Error: factorioctl MCP not found")
                 continue
 
             new_session = handle_message(
@@ -744,6 +751,8 @@ def main():
                         help="Multi-agent mode: load all agents with this group name")
     parser.add_argument("--agents", default=None,
                         help="Multi-agent mode: comma-separated agent names")
+    parser.add_argument("--scale", type=int, default=None,
+                        help="Multi-agent mode: start first N agents from group (by planet order)")
     parser.add_argument("--rcon-host", default="localhost")
     parser.add_argument("--rcon-port", type=int, default=27015)
     parser.add_argument("--rcon-password", default="factorio")
@@ -784,9 +793,12 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown_handler)
 
     # Multi-agent mode
-    if args.group or args.agents:
+    if args.group or args.agents or args.scale:
         names = args.agents.split(",") if args.agents else None
-        profiles = discover_agents(group=args.group, names=names)
+        group = args.group or "doug-squad"
+        profiles = discover_agents(group=group, names=names)
+        if args.scale:
+            profiles = profiles[:args.scale]
         main_multi(args, profiles)
         return
 
@@ -837,6 +849,11 @@ def main():
     else:
         print("WARNING: claude-interface mod not detected.")
 
+    # Pre-place character on correct planet
+    planet = agent.get("planet", "nauvis")
+    result = pre_place_character(rcon, agent_name, planet, spawn_offset=0)
+    print(f"  Character:   {agent_name} -> {planet}: {result}")
+
     # Telemetry
     telemetry = build_telemetry(args)
 
@@ -869,13 +886,15 @@ def main():
                 print(f"[{player_name} -> {agent_name}] {message}")
                 emit_chat(telemetry, "player", message, agent=telemetry_name)
 
-                try:
-                    set_status(rcon, player_index, "[color=1,0.8,0.2]Thinking...[/color]")
-                except Exception:
-                    pass
+                if player_index > 0:
+                    try:
+                        set_status(rcon, player_index, "[color=1,0.8,0.2]Thinking...[/color]")
+                    except Exception:
+                        pass
 
                 if not mcp_config:
-                    send_response(rcon, player_index, agent_name, "Error: factorioctl MCP not found")
+                    if player_index > 0:
+                        send_response(rcon, player_index, agent_name, "Error: factorioctl MCP not found")
                     continue
 
                 new_session = handle_message(

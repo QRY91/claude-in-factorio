@@ -20,6 +20,9 @@ local function init_storage()
     -- Agent character entities and walk targets (for deterministic on_tick processing)
     storage.characters = storage.characters or {}
     storage.walk_state = storage.walk_state or {}
+    storage.entity_queue = storage.entity_queue or {}
+    -- Map markers for agent characters (chart tag references)
+    storage.agent_tags = storage.agent_tags or {}
 end
 
 -- Ensure per-agent message tables exist for a player
@@ -468,6 +471,63 @@ local function process_walk_states()
     end
 end
 
+-- Apply queued entity operations each tick (rotation, etc.).
+-- Processed in on_tick for deterministic multiplayer behavior.
+local function process_entity_queue()
+    if not storage.entity_queue or #storage.entity_queue == 0 then return end
+    local queue = storage.entity_queue
+    storage.entity_queue = {}
+    for _, item in ipairs(queue) do
+        if item.action == "rotate" then
+            local surface = game.surfaces[item.surface_name]
+            if surface then
+                for _, e in pairs(surface.find_entities_filtered{area = {{-500, -500}, {500, 500}}}) do
+                    if e.unit_number == item.unit_number then
+                        if e.supports_direction then
+                            e.direction = item.direction
+                        end
+                        break
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Update map markers for agent characters (every 60 ticks = 1 second)
+local function update_agent_markers()
+    if not storage.characters then return end
+    if not storage.agent_tags then storage.agent_tags = {} end
+    for agent_id, c in pairs(storage.characters) do
+        if c and c.valid then
+            local tag = storage.agent_tags[agent_id]
+            if tag and tag.valid then
+                -- Update position if moved
+                local tp = tag.position
+                local cp = c.position
+                if tp.x ~= cp.x or tp.y ~= cp.y then
+                    tag.position = cp
+                end
+            else
+                -- Create new chart tag
+                local label = storage.agent_labels[agent_id] or agent_id
+                local new_tag = c.force.add_chart_tag(c.surface, {
+                    position = c.position,
+                    text = label,
+                })
+                if new_tag then
+                    storage.agent_tags[agent_id] = new_tag
+                end
+            end
+        else
+            -- Character gone — remove tag
+            local tag = storage.agent_tags[agent_id]
+            if tag and tag.valid then tag.destroy() end
+            storage.agent_tags[agent_id] = nil
+        end
+    end
+end
+
 -- Process queued RCON commands deterministically in on_tick.
 -- This prevents desync in multiplayer: RCON pushes to queue,
 -- on_tick processes it identically on server and all clients.
@@ -476,29 +536,38 @@ local function process_rcon_queue()
     local queue = storage._rcon_queue
     storage._rcon_queue = {}
     for _, item in ipairs(queue) do
+        -- Skip GUI updates for injected/synthetic messages (player_index=0)
+        local pi = item.pi or 0
         if item.type == "response" then
-            local player = game.get_player(item.pi)
-            if player then
-                add_chat_message(player, item.agent, "claude", item.text)
-                set_status(player, "[color=0.4,0.8,0.4]Ready[/color]")
+            if pi > 0 then
+                local player = game.get_player(pi)
+                if player then
+                    add_chat_message(player, item.agent, "claude", item.text)
+                    set_status(player, "[color=0.4,0.8,0.4]Ready[/color]")
+                end
             end
         elseif item.type == "tool" then
             -- Tool calls only shown in status bar, not in chat log
-            local player = game.get_player(item.pi)
-            if player then
-                set_status(player, "[color=0.6,0.7,1]Using " .. item.tool .. "...[/color]")
+            if pi > 0 then
+                local player = game.get_player(pi)
+                if player then
+                    set_status(player, "[color=0.6,0.7,1]Using " .. item.tool .. "...[/color]")
+                end
             end
         elseif item.type == "status" then
-            local player = game.get_player(item.pi)
-            if player then
-                set_status(player, item.text)
+            if pi > 0 then
+                local player = game.get_player(pi)
+                if player then
+                    set_status(player, item.text)
+                end
             end
         elseif item.type == "register" then
             register_agent(item.agent, item.label)
         elseif item.type == "unregister" then
             unregister_agent(item.agent)
         elseif item.type == "clear" then
-            local player = game.get_player(item.pi)
+            if pi < 1 then goto continue end
+            local player = game.get_player(pi)
             if player then
                 if item.agent then
                     if storage.messages[item.pi] then
@@ -521,7 +590,17 @@ local function process_rcon_queue()
                     end
                 end
             end
+        elseif item.type == "spectator" then
+            storage.spectator_mode = item.enabled
+            if item.enabled then
+                for _, player in pairs(game.players) do
+                    if player.connected and player.controller_type ~= defines.controllers.spectator then
+                        player.set_controller{type = defines.controllers.spectator}
+                    end
+                end
+            end
         end
+        ::continue::
     end
 end
 
@@ -588,6 +667,31 @@ remote.add_interface("claude_interface", {
         storage.walk_state[agent_id] = {walking = false}
     end,
 
+    -- Get character entity (safe from any context, uses synced mod storage)
+    get_character = function(agent_id)
+        if not storage.characters then return nil end
+        local c = storage.characters[agent_id]
+        if c and c.valid then return c end
+        return nil
+    end,
+
+    -- List all agent characters as JSON string
+    list_characters = function()
+        if not storage.characters then return "[]" end
+        local result = {}
+        for agent_id, c in pairs(storage.characters) do
+            if c and c.valid then
+                table.insert(result, {
+                    agent_id = agent_id,
+                    unit_number = c.unit_number,
+                    position = { x = c.position.x, y = c.position.y },
+                    health = c.health
+                })
+            end
+        end
+        return helpers.table_to_json(result)
+    end,
+
     -- Get character position (read-only, safe from any context)
     get_character_pos = function(agent_id)
         if not storage.characters then return nil end
@@ -598,16 +702,33 @@ remote.add_interface("claude_interface", {
         return nil
     end,
 
+    -- Queue spectator mode change (processed in on_tick for MP determinism)
     set_spectator_mode = function(enabled)
-        storage.spectator_mode = enabled
-        -- Apply to all currently connected players
-        if enabled then
-            for _, player in pairs(game.players) do
-                if player.connected and player.controller_type ~= defines.controllers.spectator then
-                    player.set_controller{type = defines.controllers.spectator}
-                end
-            end
-        end
+        table.insert(storage._rcon_queue, {
+            type = "spectator", enabled = enabled,
+        })
+    end,
+
+    -- Queue entity rotation (processed in on_tick for MP determinism)
+    queue_rotate = function(unit_number, direction, surface_name)
+        if not storage.entity_queue then storage.entity_queue = {} end
+        table.insert(storage.entity_queue, {
+            action = "rotate",
+            unit_number = unit_number,
+            direction = direction,
+            surface_name = surface_name,
+        })
+    end,
+
+    -- Inject a message into the bridge input as if from a player.
+    -- Used by supervisor sessions to send tasks to agents.
+    inject_message = function(from_name, target_agent, message)
+        helpers.write_file(INPUT_FILE, helpers.table_to_json({
+            player_index = 0,
+            player_name = from_name or "Supervisor",
+            target_agent = target_agent or "all",
+            message = message,
+        }) .. "\n", true, 0)
     end,
 
     ping = function()
@@ -625,6 +746,11 @@ script.on_init(init_storage)
 script.on_event(defines.events.on_tick, function(event)
     process_rcon_queue()
     process_walk_states()
+    process_entity_queue()
+    -- Update map markers every 60 ticks (~1 second)
+    if event.tick % 60 == 0 then
+        update_agent_markers()
+    end
 end)
 
 script.on_configuration_changed(function(data)

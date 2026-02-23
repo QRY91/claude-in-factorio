@@ -63,29 +63,25 @@ def pre_place_character(rcon, agent_name: str, planet: str, spawn_offset: int = 
     """Create or teleport an agent's character to the specified planet surface.
     Forces terrain generation around spawn so agents don't land in void.
     spawn_offset shifts the X position to avoid overlapping with the player.
-    Returns status: already_placed, teleported, created, surface_not_found, creation_failed."""
+    Returns status: already_placed, teleported, created, surface_not_found, creation_failed.
+
+    All character state lives in mod storage (synced in MP) — no _G.global usage."""
     spawn_x = spawn_offset * 5 + 5  # offset from player spawn at (0,0)
     lua_code = (
-        'if not global then global = {} end '
-        'if not global.factorioctl_characters then global.factorioctl_characters = {} end '
-        'if not global.factorioctl_surfaces then global.factorioctl_surfaces = {} end '
         f'local agent_id = "{agent_name}" '
         f'local target_surface = game.surfaces["{planet}"] '
         'if not target_surface then rcon.print("surface_not_found") return end '
-        f'global.factorioctl_surfaces[agent_id] = "{planet}" '
         # Force terrain generation around spawn (4 chunks ≈ 128 tiles)
         f'target_surface.request_to_generate_chunks({{{spawn_x}, 0}}, 4) '
         'target_surface.force_generate_chunk_requests() '
-        'local c = global.factorioctl_characters[agent_id] '
+        'local c = remote.call("claude_interface", "get_character", agent_id) '
         'if c and c.valid then '
-        '  remote.call("claude_interface", "register_character", agent_id, c) '
         f'  if c.surface.name == "{planet}" then rcon.print("already_placed") return end '
         f'  c.teleport({{{spawn_x}, 0}}, target_surface) '
         '  rcon.print("teleported") return '
         'end '
         f'local new_char = target_surface.create_entity{{name = "character", position = {{{spawn_x}, 0}}, force = game.forces.player}} '
         'if new_char then '
-        '  global.factorioctl_characters[agent_id] = new_char '
         '  remote.call("claude_interface", "register_character", agent_id, new_char) '
         '  rcon.print("created") '
         'else '

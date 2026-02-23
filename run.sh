@@ -1,7 +1,9 @@
 #!/bin/bash
 # Unified launcher for claude-in-factorio
 # Usage:
-#   ./run.sh                  # start bridge (multi-agent, doug-squad)
+#   ./run.sh                  # start bridge (nauvis only, scale=1)
+#   SCALE=3 ./run.sh          # start bridge with 3 agents (nauvis, vulcanus, fulgora)
+#   SCALE=5 ./run.sh          # all 5 planets
 #   ./run.sh fresh            # fresh world + setup surfaces + bridge
 #   ./run.sh restart          # stop server, start server, bridge
 #   ./run.sh restart fresh    # stop, fresh world, bridge
@@ -27,6 +29,7 @@ done
 
 # Defaults
 GROUP="${GROUP:-doug-squad}"
+SCALE="${SCALE:-1}"
 MODEL="${MODEL:-}"
 EXTRA_ARGS=""
 
@@ -55,12 +58,12 @@ stop_server() {
 }
 
 start_bridge() {
-    local flags="--group $GROUP"
+    local flags="--group $GROUP --scale $SCALE"
     if [ "$FRESH" = true ]; then
         flags="$flags --setup-surfaces"
     fi
     echo ""
-    echo "Starting bridge..."
+    echo "Starting bridge (scale=$SCALE)..."
     exec python3 "$PROJECT_ROOT/bridge/pipe.py" $flags $EXTRA_ARGS
 }
 
@@ -111,6 +114,8 @@ case "$CMD" in
         echo "  sync           Sync mod to Factorio mods dir"
         echo ""
         echo "Environment:"
+        echo "  SCALE=1            Number of agents by planet order (default: 1 = nauvis only)"
+        echo "                     1=nauvis  2=+vulcanus  3=+fulgora  4=+gleba  5=+aquilo"
         echo "  GROUP=doug-squad   Agent group (default: doug-squad)"
         echo "  MODEL=sonnet       Claude model override"
         exit 1
