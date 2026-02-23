@@ -2,21 +2,171 @@
   "agent": "doug-nauvis",
   "chain": [
     {
-      "id": "coal-bootstrap",
-      "prompt": "DEEP BORE DIRECTIVE: COAL BOOTSTRAP. Find the nearest coal patch. Mine 5 coal by hand. Craft a burner-mining-drill (requires 3 iron-gear-wheel + 3 iron-plate + 1 stone-furnace). Place the drill ON the coal patch. Place a wooden chest adjacent to the drill output. Fuel the drill with coal. Do NOT render maps or scan entities unless stuck. Execute efficiently.",
+      "id": "survey-resources",
+      "prompt": "DEEP BORE DIRECTIVE: RESOURCE SURVEY. Use find_nearest_resource for iron-ore, copper-ore, coal, and stone. Then find the nearest water source using get_resources with resource_type 'water' or scan nearby. Broadcast a summary of all resource locations and distances. Do NOT mine anything yet. This is recon only.",
       "delay_seconds": 0
     },
     {
-      "id": "iron-mining",
-      "prompt": "DEEP BORE DIRECTIVE: IRON MINING. Find the nearest iron ore patch. Craft a burner-mining-drill. Place it on the iron patch. Place a wooden chest at the output. Fuel with coal from your coal bootstrap chest. Verify the drill is mining. Execute efficiently \u2014 no unnecessary scans.",
+      "id": "hand-mine-bootstrap",
+      "prompt": "DEEP BORE DIRECTIVE: BOOTSTRAP MATERIALS. Hand-mine the following: 15 stone (for furnaces), 30 coal (for fuel), 20 iron-ore, 10 copper-ore. Walk to each resource patch and use mine_at. Do NOT craft anything yet — just collect raw materials. Execute efficiently, no map renders.",
+      "delay_seconds": 3
+    },
+    {
+      "id": "craft-basic-infrastructure",
+      "prompt": "DEEP BORE DIRECTIVE: BASIC INFRASTRUCTURE. Craft 3 stone-furnace (5 stone each). Place all 3 furnaces in a row near the iron ore patch but NOT on ore tiles. Insert coal as fuel into each furnace. Insert iron-ore into 2 furnaces and copper-ore into 1. Extract plates when ready. This is the temporary smelting line.",
+      "delay_seconds": 3
+    },
+    {
+      "id": "craft-mining-drills",
+      "prompt": "DEEP BORE DIRECTIVE: AUTOMATED MINING. You need iron plates and stone — check inventory, smelt more if needed. Craft 3 iron-gear-wheel, then craft 1 burner-mining-drill (3 gear + 3 iron-plate + 1 stone-furnace). Place the drill ON the coal patch facing so output is off the patch. Fuel it with coal. Place a wooden-chest at the drill output position (use get_machine_belt_positions to find it). This is your coal supply.",
       "delay_seconds": 5
     },
     {
-      "id": "iron-smelting",
-      "prompt": "DEEP BORE DIRECTIVE: IRON SMELTING. Craft 2 stone furnaces. Place them near your iron mining output. Set up inserters or hand-feed iron ore into the furnaces. Fuel furnaces with coal. Place a chest to collect iron plates. This completes the basic iron plate production line.",
+      "id": "iron-drill",
+      "prompt": "DEEP BORE DIRECTIVE: IRON DRILL. Smelt iron if needed for materials. Craft 1 burner-mining-drill. Place it ON the iron ore patch. Fuel with coal. Place a wooden-chest at the output (use get_machine_belt_positions). Now you have automated iron ore collection.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "copper-drill",
+      "prompt": "DEEP BORE DIRECTIVE: COPPER DRILL. Craft 1 burner-mining-drill. Place it ON the copper ore patch. Fuel with coal. Place a wooden-chest at the output (use get_machine_belt_positions). All three basic resources now have automated mining.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "steam-power",
+      "prompt": "DEEP BORE DIRECTIVE: POWER GRID. You need steam power. Recipe: 1 offshore-pump (1 electronic-circuit + 1 pipe + 1 iron-gear-wheel), 1 boiler (1 stone-furnace + 4 pipe), 1 steam-engine (8 iron-gear-wheel + 5 pipe + 10 iron-plate), pipes (1 iron-plate each — craft 10). First craft electronic-circuit (1 iron-plate + 3 copper-cable; copper-cable = 1 copper-plate makes 2). Then craft the offshore-pump. Find water with find_nearest_resource type 'offshore-pump-input' or walk toward where water might be. Place offshore-pump on water, boiler adjacent, steam-engine on boiler output. Fuel boiler with coal. Place a small-electric-pole nearby.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "research-lab",
+      "prompt": "DEEP BORE DIRECTIVE: SCIENCE FACILITY. Craft 1 lab (10 electronic-circuit + 10 iron-gear-wheel + 4 transport-belt). Transport-belt = 1 iron-gear-wheel + 1 iron-plate per 2 belts. Place the lab within range of your electric pole (check power coverage). If no power reaches, place more small-electric-poles to connect. Verify the lab has power using get_power_status.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "red-science-and-automation",
+      "prompt": "DEEP BORE DIRECTIVE: RED SCIENCE. Craft 10 automation-science-pack (1 copper-plate + 1 iron-gear-wheel each). Walk to the lab. Insert all 10 science packs into the lab using insert_items with inventory_type 'chest'. Then use start_research to queue 'automation' technology. Verify with get_research_status.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "research-logistics",
+      "prompt": "DEEP BORE DIRECTIVE: LOGISTICS RESEARCH. Craft 10 more automation-science-pack. Insert into lab. Research 'logistics' technology (if automation is done, otherwise wait and check get_research_status). Logistics unlocks underground belts and splitters. While waiting, smelt extra iron and copper plates — you will need many.",
+      "delay_seconds": 10
+    },
+    {
+      "id": "first-assembler",
+      "prompt": "DEEP BORE DIRECTIVE: ASSEMBLY MACHINE. Automation research should be complete — verify with get_research_status. Craft 1 assembling-machine-1 (3 electronic-circuit + 5 iron-gear-wheel + 9 iron-plate). Place it near your power grid. Connect with electric poles if needed. Set recipe to 'iron-gear-wheel' using set_recipe. This is your first automated crafting.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "belt-to-assembler",
+      "prompt": "DEEP BORE DIRECTIVE: LOGISTICS HOOKUP. Your assembler needs iron plates fed in. Use get_machine_belt_positions on the assembler to find input/output positions. Place an inserter at the input position (direction facing to pick FROM a belt/chest and drop INTO the assembler). Place a wooden-chest next to the inserter's pickup side and fill it with iron plates. Place an output inserter + chest on the other side. Verify the assembler is producing gears.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "automate-red-science",
+      "prompt": "DEEP BORE DIRECTIVE: AUTOMATE RED SCIENCE. Craft 1 more assembling-machine-1. Place it near power. Set recipe to 'automation-science-pack'. This needs copper-plate and iron-gear-wheel inputs. Place inserters to feed from chests. Stock the input chests with copper plates and iron gears (from your gear assembler output or hand-crafted). Place an output inserter feeding into the lab. Verify science packs are being produced and consumed.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "expand-smelting",
+      "prompt": "DEEP BORE DIRECTIVE: SMELTING EXPANSION. You need more throughput. Craft 4 stone-furnace. Place them in a line near the iron patch. Craft inserters (1 electronic-circuit + 1 iron-gear-wheel + 1 iron-plate each) — make 8. For each furnace: place an input inserter to feed ore, an output inserter to extract plates. Use wooden chests or transport belts to connect. Fuel all furnaces with coal.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "main-bus-iron",
+      "prompt": "DEEP BORE DIRECTIVE: MAIN BUS (IRON). Craft 50 transport-belt. Use route_belt to create a belt line from your iron smelting output heading south (or toward your assembly area). This is lane 1 of your main bus. Make it at least 20 tiles long. Use extend_existing=true if connecting to existing belts.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "main-bus-copper",
+      "prompt": "DEEP BORE DIRECTIVE: MAIN BUS (COPPER). Set up copper smelting (4 furnaces + inserters, same pattern as iron). Craft transport-belt and route a copper plate belt parallel to the iron bus, 2 tiles apart. This is lane 2. Both lanes should run toward the assembly area.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "research-queue-1",
+      "prompt": "DEEP BORE DIRECTIVE: RESEARCH PHASE 1. Check research status. Queue these in order if not already done: electronics, automation, logistics, fast-inserter. Ensure lab has power and science packs. Craft and insert more automation-science-packs if the lab is empty (20 should last a while). Report which technologies are complete.",
+      "delay_seconds": 10
+    },
+    {
+      "id": "green-science-prep",
+      "prompt": "DEEP BORE DIRECTIVE: GREEN SCIENCE PREPARATION. Green science (logistic-science-pack) requires 1 inserter + 1 transport-belt per pack. You need assemblers producing both. Set up: 1 assembler for inserters (recipe: inserter), 1 assembler for transport-belt. Feed them iron plates and gears from the main bus using inserters. Output into chests or belts.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "green-science-assembly",
+      "prompt": "DEEP BORE DIRECTIVE: GREEN SCIENCE ASSEMBLY. Set up 1 assembling-machine-1 with recipe 'logistic-science-pack'. It needs inserter + transport-belt inputs. Feed from your inserter assembler and belt assembler outputs. Output green science packs to the lab with an inserter. Verify green packs are being produced and the lab is consuming both red and green.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "research-queue-2",
+      "prompt": "DEEP BORE DIRECTIVE: RESEARCH PHASE 2. With red + green science automated, queue: steel-processing, engine, fluid-handling, oil-processing, sulfur-processing, advanced-material-processing. These unlock steel furnaces, engines, oil refineries, and chemical plants needed for blue science. Keep labs stocked. Report status.",
+      "delay_seconds": 15
+    },
+    {
+      "id": "steel-smelting",
+      "prompt": "DEEP BORE DIRECTIVE: STEEL PRODUCTION. Steel-processing should be researched. Set up 4 stone-furnaces (or steel-furnace if available) dedicated to steel-plate smelting. Steel requires iron plates as input (5 iron-plate per steel-plate). Feed iron plates in, extract steel plates out. Route steel plates onto the main bus as lane 3.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "oil-setup",
+      "prompt": "DEEP BORE DIRECTIVE: OIL PROCESSING. Find the nearest crude-oil patch using find_nearest_resource. Craft and place an oil-refinery (10 steel-plate + 10 iron-gear-wheel + 10 pipe + 10 stone-brick). Set recipe to 'basic-oil-processing'. Place a pumpjack on the oil patch. Connect pumpjack to refinery with pipes. The refinery outputs petroleum gas — connect output pipe. You will need chemical plants next for plastic and sulfur. Power everything.",
+      "delay_seconds": 10
+    },
+    {
+      "id": "plastic-production",
+      "prompt": "DEEP BORE DIRECTIVE: PLASTIC BARS. Craft and place 1 chemical-plant (5 steel-plate + 5 iron-gear-wheel + 5 electronic-circuit + 5 pipe). Set recipe to 'plastic-bar' (1 coal + 20 petroleum-gas per 2 plastic). Connect petroleum gas pipe from refinery. Feed coal via inserter. Output plastic bars to a chest. This is needed for advanced circuits and red circuits.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "advanced-circuits",
+      "prompt": "DEEP BORE DIRECTIVE: ADVANCED CIRCUITS. Set up 1 assembling-machine for 'electronic-circuit' (1 iron-plate + 3 copper-cable) if not already automated. Then set up 1 assembler for 'advanced-circuit' (2 electronic-circuit + 2 plastic-bar + 4 copper-cable). Feed inputs via inserters from chests or belts. Output to chest. These are needed for blue science.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "engine-units",
+      "prompt": "DEEP BORE DIRECTIVE: ENGINE UNITS. Set up 1 assembler with recipe 'engine-unit' (1 steel-plate + 1 iron-gear-wheel + 2 pipe). Feed from main bus. Output to chest. Engine units are needed for blue science and many later recipes.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "blue-science",
+      "prompt": "DEEP BORE DIRECTIVE: BLUE SCIENCE. Set up 1 assembler for 'chemical-science-pack' (requires 3 advanced-circuit + 2 engine-unit + 1 sulfur per pack). You may need to set up sulfur production first: chemical-plant with recipe 'sulfur' (30 water + 30 petroleum-gas per 2 sulfur). Connect all inputs. Feed blue science to lab. Verify lab consumes red + green + blue.",
+      "delay_seconds": 10
+    },
+    {
+      "id": "research-queue-3",
+      "prompt": "DEEP BORE DIRECTIVE: RESEARCH PHASE 3. With 3 science types automated, research: advanced-material-processing-2 (steel furnaces), robotics, chemical-science-pack, utility-science-pack prerequisites. Queue as many as possible. Keep labs stocked with all 3 science types. Report completed technologies.",
+      "delay_seconds": 15
+    },
+    {
+      "id": "production-science",
+      "prompt": "DEEP BORE DIRECTIVE: PRODUCTION SCIENCE. Set up production-science-pack assembly: requires 1 electric-furnace + 1 productivity-module + 30 rail per pack. This is complex — craft the components step by step. Electric-furnace = 10 steel-plate + 5 advanced-circuit + 10 stone-brick. Rails = 1 stone + 1 iron-stick + 1 steel-plate per 2 rails. Set up the assembler and feed to lab.",
+      "delay_seconds": 10
+    },
+    {
+      "id": "utility-science",
+      "prompt": "DEEP BORE DIRECTIVE: UTILITY SCIENCE. Set up utility-science-pack assembly: requires 1 processing-unit + 1 flying-robot-frame + 1 low-density-structure per pack. Processing-unit = 20 electronic-circuit + 2 advanced-circuit + 0.5 sulfuric-acid. Low-density-structure = 20 copper-plate + 2 steel-plate + 5 plastic-bar. Flying-robot-frame = 1 electric-engine-unit + 2 battery + 1 electronic-circuit + 1 steel-plate. This is the most complex science. Set up sub-assemblies as needed.",
+      "delay_seconds": 10
+    },
+    {
+      "id": "rocket-silo",
+      "prompt": "DEEP BORE DIRECTIVE: ROCKET SILO. Research rocket-silo technology if not done. Craft and place the rocket silo (200 steel-plate + 200 concrete + 200 pipe + 100 processing-unit + 200 electric-engine-unit). This is a massive craft — you may need to do it in stages. Place near power. Connect to electric grid. The silo needs rocket parts: rocket-control-unit, low-density-structure, rocket-fuel.",
+      "delay_seconds": 15
+    },
+    {
+      "id": "rocket-fuel",
+      "prompt": "DEEP BORE DIRECTIVE: ROCKET FUEL. Set up chemical plant with recipe 'solid-fuel' (from petroleum gas or light oil). Then set up another chemical plant for 'rocket-fuel' (10 solid-fuel per rocket fuel). Feed output to rocket silo via inserter or logistics.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "rocket-parts",
+      "prompt": "DEEP BORE DIRECTIVE: ROCKET ASSEMBLY. The silo auto-crafts rocket parts when fed: rocket-control-unit (1 processing-unit + 1 speed-module), low-density-structure, rocket-fuel. Set up assemblers for rocket-control-unit and feed all three components to the silo via inserters. Insert a satellite (if available) or just launch without. Verify rocket progress in the silo.",
+      "delay_seconds": 10
+    },
+    {
+      "id": "launch",
+      "prompt": "DEEP BORE DIRECTIVE: LAUNCH. Check the rocket silo status. If rocket is ready, launch it. If not, identify what components are missing and craft/supply them. Once launched, broadcast the achievement. Doug has reached space. This finding has been reviewed. Doug finds no issue.",
       "delay_seconds": 5
     }
   ],
   "loop": false,
-  "current_index": 3
+  "current_index": 0
 }
