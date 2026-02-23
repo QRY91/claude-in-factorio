@@ -219,3 +219,15 @@ def emit_status(telemetry: Telemetry | None, data: dict,
             "data": data,
             "agent": agent, "tick": tick,
         })
+
+
+def emit_chain_event(telemetry: Telemetry | None, event_type: str, data: dict,
+                     agent: str = "BORE-01", tick: int | None = None):
+    """Emit auto-chain orchestration event.
+    event_type: 'task_complete', 'auto_chain', or 'chain_complete'."""
+    if telemetry:
+        telemetry.emit({
+            "type": event_type,
+            "data": data,
+            "agent": agent, "tick": tick,
+        })

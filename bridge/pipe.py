@@ -107,7 +107,8 @@ from transport import (InputWatcher, send_response, send_tool_status, set_status
                        check_mod_loaded, register_agent, unregister_agent,
                        pre_place_character, setup_surfaces, set_spectator_mode)
 from paths import find_mod_source, find_mods_dir
-from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, Telemetry, emit_chat, emit_tool_call, emit_error, emit_status
+from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, Telemetry, emit_chat, emit_tool_call, emit_error, emit_status, emit_chain_event
+from taskchain import load_all_task_chains, TaskChain
 
 _BRIDGE_DIR = Path(__file__).resolve().parent
 SESSIONS_FILE = _BRIDGE_DIR / ".sessions.json"
@@ -557,6 +558,7 @@ class AgentThread:
         self.rcon = rcon
         self.telemetry = telemetry
         self.session_id = load_session(self.agent_name)
+        self.task_chain: TaskChain | None = None
         self.inbox: queue.Queue = queue.Queue()
         self._thread = threading.Thread(
             target=self._run, name=f"agent-{self.agent_name}", daemon=True,
@@ -604,6 +606,53 @@ class AgentThread:
             if new_session:
                 self.session_id = new_session
                 save_session(self.agent_name, self.session_id)
+
+            self._maybe_chain_next(msg)
+
+    def _maybe_chain_next(self, completed_msg: dict):
+        """If this was a chain task, emit completion and dispatch the next one."""
+        if not self.task_chain or not completed_msg.get("_chain_task_id"):
+            return
+
+        current = self.task_chain.current_task
+        if current:
+            emit_chain_event(self.telemetry, "task_complete", {
+                "task_id": current["id"],
+                "chain_index": self.task_chain.current_index,
+                "chain_length": len(self.task_chain.chain),
+            }, agent=self.telemetry_name)
+
+        next_task = self.task_chain.advance()
+        if next_task is None:
+            print(f"  [{_ts()}] Chain complete for {self.agent_name}")
+            emit_chain_event(self.telemetry, "chain_complete", {
+                "agent": self.agent_name,
+                "tasks_completed": len(self.task_chain.chain),
+            }, agent=self.telemetry_name)
+            return
+
+        delay = next_task.get("delay_seconds", 0)
+        if delay > 0:
+            print(f"  [{_ts()}] Chain: waiting {delay}s before next task...")
+            time.sleep(delay)
+
+        idx = self.task_chain.current_index
+        total = len(self.task_chain.chain)
+        print(f"  [{_ts()}] Chain: dispatching '{next_task['id']}' ({idx + 1}/{total})")
+        emit_chain_event(self.telemetry, "auto_chain", {
+            "task_id": next_task["id"],
+            "chain_index": idx,
+            "chain_length": total,
+            "prompt_preview": next_task["prompt"][:100],
+        }, agent=self.telemetry_name)
+
+        self.enqueue({
+            "message": next_task["prompt"],
+            "player_index": 0,
+            "player_name": "chain",
+            "target_agent": self.agent_name,
+            "_chain_task_id": next_task["id"],
+        })
 
 
 def main_multi(args, agent_profiles: list[dict]):
@@ -689,6 +738,22 @@ def main_multi(args, agent_profiles: list[dict]):
         print(f"  [{_ts()}] {at.agent_name} online")
         if stagger > 0 and i < len(agents) - 1:
             time.sleep(stagger)
+
+    # Load and dispatch task chains
+    chains = load_all_task_chains()
+    for agent_name, chain in chains.items():
+        if agent_name in agents:
+            agents[agent_name].task_chain = chain
+            task = chain.current_task
+            if task:
+                print(f"  [{_ts()}] Chain: {agent_name} — {len(chain.chain)} tasks, starting at #{chain.current_index} ({task['id']})")
+                agents[agent_name].enqueue({
+                    "message": task["prompt"],
+                    "player_index": 0,
+                    "player_name": "chain",
+                    "target_agent": agent_name,
+                    "_chain_task_id": task["id"],
+                })
 
     print(f"\nWatching for messages... (Ctrl+C to stop)\n")
 
@@ -868,13 +933,32 @@ def main():
     # Watcher
     watcher = InputWatcher(input_file)
 
+    # Load task chain for this agent
+    from taskchain import load_task_chain
+    task_chain = load_task_chain(agent_name)
+    pending_chain_msgs: list[dict] = []
+    if task_chain:
+        task = task_chain.current_task
+        if task:
+            print(f"  [{_ts()}] Chain: {agent_name} — {len(task_chain.chain)} tasks, starting at #{task_chain.current_index} ({task['id']})")
+            pending_chain_msgs.append({
+                "message": task["prompt"],
+                "player_index": 0,
+                "player_name": "chain",
+                "target_agent": agent_name,
+                "_chain_task_id": task["id"],
+            })
+
     print(f"\nWatching for messages... (Ctrl+C to stop)\n")
 
     try:
         while True:
             time.sleep(args.poll_interval)
 
-            for msg in watcher.poll():
+            msgs = list(watcher.poll()) + pending_chain_msgs
+            pending_chain_msgs.clear()
+
+            for msg in msgs:
                 target = msg.get("target_agent", "default")
                 if target != agent_name:
                     continue
@@ -906,6 +990,43 @@ def main():
                 if new_session:
                     session_id = new_session
                     save_session(agent_name, session_id)
+
+                # Auto-chain: dispatch next task if this was a chain task
+                if task_chain and msg.get("_chain_task_id"):
+                    current = task_chain.current_task
+                    if current:
+                        emit_chain_event(telemetry, "task_complete", {
+                            "task_id": current["id"],
+                            "chain_index": task_chain.current_index,
+                            "chain_length": len(task_chain.chain),
+                        }, agent=telemetry_name)
+                    next_task = task_chain.advance()
+                    if next_task is None:
+                        print(f"  [{_ts()}] Chain complete for {agent_name}")
+                        emit_chain_event(telemetry, "chain_complete", {
+                            "agent": agent_name,
+                            "tasks_completed": len(task_chain.chain),
+                        }, agent=telemetry_name)
+                    else:
+                        delay = next_task.get("delay_seconds", 0)
+                        if delay > 0:
+                            time.sleep(delay)
+                        idx = task_chain.current_index
+                        total = len(task_chain.chain)
+                        print(f"  [{_ts()}] Chain: dispatching '{next_task['id']}' ({idx + 1}/{total})")
+                        emit_chain_event(telemetry, "auto_chain", {
+                            "task_id": next_task["id"],
+                            "chain_index": idx,
+                            "chain_length": total,
+                            "prompt_preview": next_task["prompt"][:100],
+                        }, agent=telemetry_name)
+                        pending_chain_msgs.append({
+                            "message": next_task["prompt"],
+                            "player_index": 0,
+                            "player_name": "chain",
+                            "target_agent": agent_name,
+                            "_chain_task_id": next_task["id"],
+                        })
 
     except (KeyboardInterrupt, SystemExit):
         print("\nShutting down...")

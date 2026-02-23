@@ -1,0 +1,22 @@
+{
+  "agent": "doug-nauvis",
+  "chain": [
+    {
+      "id": "coal-bootstrap",
+      "prompt": "DEEP BORE DIRECTIVE: COAL BOOTSTRAP. Find the nearest coal patch. Mine 5 coal by hand. Craft a burner-mining-drill (requires 3 iron-gear-wheel + 3 iron-plate + 1 stone-furnace). Place the drill ON the coal patch. Place a wooden chest adjacent to the drill output. Fuel the drill with coal. Do NOT render maps or scan entities unless stuck. Execute efficiently.",
+      "delay_seconds": 0
+    },
+    {
+      "id": "iron-mining",
+      "prompt": "DEEP BORE DIRECTIVE: IRON MINING. Find the nearest iron ore patch. Craft a burner-mining-drill. Place it on the iron patch. Place a wooden chest at the output. Fuel with coal from your coal bootstrap chest. Verify the drill is mining. Execute efficiently \u2014 no unnecessary scans.",
+      "delay_seconds": 5
+    },
+    {
+      "id": "iron-smelting",
+      "prompt": "DEEP BORE DIRECTIVE: IRON SMELTING. Craft 2 stone furnaces. Place them near your iron mining output. Set up inserters or hand-feed iron ore into the furnaces. Fuel furnaces with coal. Place a chest to collect iron plates. This completes the basic iron plate production line.",
+      "delay_seconds": 5
+    }
+  ],
+  "loop": false,
+  "current_index": 3
+}
