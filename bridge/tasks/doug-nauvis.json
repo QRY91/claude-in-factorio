@@ -9,52 +9,155 @@
     {
       "id": "hand-mine-bootstrap",
       "prompt": "DEEP BORE DIRECTIVE: BOOTSTRAP EXTRACTION. Manual resource collection authorized. Requisition: 15 stone, 30 coal, 20 iron-ore, 10 copper-ore. Proceed to each deposit and extract by hand. No fabrication authorized \u2014 raw stockpile only. Expedite.",
-      "delay_seconds": 3
+      "delay_seconds": 3,
+      "tests": [
+        {
+          "check": "inventory_has",
+          "item": "stone",
+          "min_count": 10
+        },
+        {
+          "check": "inventory_has",
+          "item": "coal",
+          "min_count": 20
+        },
+        {
+          "check": "inventory_has",
+          "item": "iron-ore",
+          "min_count": 10
+        }
+      ],
+      "max_retries": 2
     },
     {
       "id": "craft-basic-infrastructure",
       "prompt": "DEEP BORE DIRECTIVE: THERMAL PROCESSING ARRAY. Fabricate 3 stone-furnace (5 stone each). Deploy in formation adjacent to iron deposit \u2014 not on ore tiles. Fuel all units with coal. Load 2 furnaces with iron-ore, 1 with copper-ore. Extract plates upon completion. Temporary smelting configuration \u2014 will be superseded.",
-      "delay_seconds": 3
+      "delay_seconds": 3,
+      "tests": [
+        {
+          "check": "entity_exists",
+          "name": "stone-furnace",
+          "min_count": 3
+        }
+      ],
+      "max_retries": 2
     },
     {
       "id": "craft-mining-drills",
       "prompt": "DEEP BORE DIRECTIVE: AUTOMATED COAL EXTRACTION. Audit inventory \u2014 smelt additional materials if required. Fabricate 3 iron-gear-wheel, then 1 burner-mining-drill (3 gear + 3 iron-plate + 1 stone-furnace). Deploy drill ON the coal deposit, oriented so output falls clear of the patch. Fuel with coal. Determine the drill's output position and place a wooden-chest there to receive extracted coal. This secures Doug's fuel supply.",
-      "delay_seconds": 5
+      "delay_seconds": 5,
+      "tests": [
+        {
+          "check": "entity_exists",
+          "name": "burner-mining-drill",
+          "min_count": 1
+        }
+      ],
+      "max_retries": 2
     },
     {
       "id": "iron-drill",
       "prompt": "DEEP BORE DIRECTIVE: IRON EXTRACTION UNIT. Smelt iron if materials are insufficient. Fabricate 1 burner-mining-drill. Deploy ON the iron ore deposit. Fuel with coal. Place wooden-chest at the drill's output position. Iron ore collection is now automated.",
-      "delay_seconds": 5
+      "delay_seconds": 5,
+      "tests": [
+        {
+          "check": "entity_exists",
+          "name": "burner-mining-drill",
+          "min_count": 2
+        }
+      ]
     },
     {
       "id": "copper-drill",
       "prompt": "DEEP BORE DIRECTIVE: COPPER EXTRACTION UNIT. Fabricate 1 burner-mining-drill. Deploy ON the copper ore deposit. Fuel with coal. Place wooden-chest at output position. All three primary resources now have automated extraction.",
-      "delay_seconds": 5
+      "delay_seconds": 5,
+      "tests": [
+        {
+          "check": "entity_exists",
+          "name": "burner-mining-drill",
+          "min_count": 3
+        }
+      ]
     },
     {
       "id": "steam-power",
       "prompt": "DEEP BORE DIRECTIVE: POWER GENERATION. Doug requires steam power. Bill of materials: 1 offshore-pump (1 electronic-circuit + 1 pipe + 1 iron-gear-wheel), 1 boiler (1 stone-furnace + 4 pipe), 1 steam-engine (8 iron-gear-wheel + 5 pipe + 10 iron-plate), 10 pipe (1 iron-plate each). First fabricate electronic-circuit (1 iron-plate + 3 copper-cable; copper-cable: 1 copper-plate yields 2). Locate water. Deploy offshore-pump on water edge, boiler adjacent to pump output, steam-engine on boiler fluid output. Fuel boiler with coal. Deploy small-electric-pole within range of the steam engine.",
-      "delay_seconds": 5
+      "delay_seconds": 5,
+      "tests": [
+        {
+          "check": "entity_exists",
+          "name": "steam-engine",
+          "min_count": 1
+        },
+        {
+          "check": "entity_exists",
+          "name": "boiler",
+          "min_count": 1
+        },
+        {
+          "check": "entity_exists",
+          "name": "offshore-pump",
+          "min_count": 1
+        },
+        {
+          "check": "power_available"
+        }
+      ],
+      "max_retries": 3
     },
     {
       "id": "research-lab",
       "prompt": "DEEP BORE DIRECTIVE: RESEARCH FACILITY. Fabricate 1 lab (10 electronic-circuit + 10 iron-gear-wheel + 4 transport-belt). Transport-belt recipe: 1 iron-gear-wheel + 1 iron-plate yields 2 belts. Deploy lab within power coverage of existing electric pole. Extend power grid with additional small-electric-poles if necessary. Verify lab receives power.",
-      "delay_seconds": 5
+      "delay_seconds": 5,
+      "tests": [
+        {
+          "check": "entity_exists",
+          "name": "lab",
+          "min_count": 1
+        }
+      ],
+      "max_retries": 2
     },
     {
       "id": "red-science-and-automation",
       "prompt": "DEEP BORE DIRECTIVE: RED SCIENCE PROTOCOL. Fabricate 10 automation-science-pack (1 copper-plate + 1 iron-gear-wheel each). Deliver to lab. Initiate automation research. Verify research is progressing.",
-      "delay_seconds": 5
+      "delay_seconds": 5,
+      "tests": [
+        {
+          "check": "research_complete",
+          "technology": "automation"
+        }
+      ],
+      "max_retries": 3
     },
     {
       "id": "research-logistics",
       "prompt": "DEEP BORE DIRECTIVE: LOGISTICS RESEARCH. Fabricate 10 additional automation-science-pack. Deliver to lab. Queue logistics research (verify automation is complete first). Logistics unlocks underground belts and splitters. While research proceeds, smelt additional iron and copper plate reserves \u2014 Doug will need many.",
-      "delay_seconds": 10
+      "delay_seconds": 10,
+      "tests": [
+        {
+          "check": "research_complete",
+          "technology": "logistics"
+        }
+      ],
+      "max_retries": 3
     },
     {
       "id": "first-assembler",
       "prompt": "DEEP BORE DIRECTIVE: FIRST ASSEMBLY UNIT. Verify automation research is complete. Fabricate 1 assembling-machine-1 (3 electronic-circuit + 5 iron-gear-wheel + 9 iron-plate). Deploy near power grid. Connect with electric poles if required. Configure for iron-gear-wheel production. This is Doug's first automated fabrication line.",
-      "delay_seconds": 5
+      "delay_seconds": 5,
+      "tests": [
+        {
+          "check": "entity_exists",
+          "name": "assembling-machine-1",
+          "min_count": 1
+        },
+        {
+          "check": "research_complete",
+          "technology": "automation"
+        }
+      ],
+      "max_retries": 2
     },
     {
       "id": "belt-to-assembler",
@@ -104,17 +207,50 @@
     {
       "id": "steel-smelting",
       "prompt": "DEEP BORE DIRECTIVE: STEEL PRODUCTION. Verify steel-processing is researched. Deploy 4 furnaces dedicated to steel-plate smelting. Steel requires iron plates as input (5 iron-plate per steel-plate). Feed iron plates in, extract steel plates out. Route steel plates onto the main bus as Lane 3.",
-      "delay_seconds": 5
+      "delay_seconds": 5,
+      "tests": [
+        {
+          "check": "research_complete",
+          "technology": "steel-processing"
+        },
+        {
+          "check": "entity_exists",
+          "name": "stone-furnace",
+          "min_count": 7
+        }
+      ],
+      "max_retries": 2
     },
     {
       "id": "oil-setup",
       "prompt": "DEEP BORE DIRECTIVE: PETROLEUM FACILITY. Locate nearest crude-oil deposit. Fabricate and deploy: 1 oil-refinery (10 steel-plate + 10 iron-gear-wheel + 10 pipe + 10 stone-brick). Configure for basic-oil-processing. Deploy pumpjack on the oil patch. Connect pumpjack to refinery input with pipes. Refinery outputs petroleum gas \u2014 connect output pipe. Ensure power supply to all installations.",
-      "delay_seconds": 10
+      "delay_seconds": 10,
+      "tests": [
+        {
+          "check": "entity_exists",
+          "name": "oil-refinery",
+          "min_count": 1
+        },
+        {
+          "check": "entity_exists",
+          "name": "pumpjack",
+          "min_count": 1
+        }
+      ],
+      "max_retries": 3
     },
     {
       "id": "plastic-production",
       "prompt": "DEEP BORE DIRECTIVE: PLASTIC SYNTHESIS. Fabricate and deploy 1 chemical-plant (5 steel-plate + 5 iron-gear-wheel + 5 electronic-circuit + 5 pipe). Configure for plastic-bar production (1 coal + 20 petroleum-gas yields 2 plastic-bar). Connect petroleum gas pipe from refinery. Feed coal via inserter. Output plastic bars to chest. Required for advanced circuit production.",
-      "delay_seconds": 5
+      "delay_seconds": 5,
+      "tests": [
+        {
+          "check": "entity_exists",
+          "name": "chemical-plant",
+          "min_count": 1
+        }
+      ],
+      "max_retries": 2
     },
     {
       "id": "advanced-circuits",
@@ -149,7 +285,15 @@
     {
       "id": "rocket-silo",
       "prompt": "DEEP BORE DIRECTIVE: ROCKET SILO CONSTRUCTION. Research rocket-silo technology if outstanding. Fabricate and deploy rocket silo (200 steel-plate + 200 concrete + 200 pipe + 100 processing-unit + 200 electric-engine-unit). Staged fabrication authorized \u2014 this is a massive requisition. Deploy near power grid. The silo requires three input types: rocket-control-unit, low-density-structure, rocket-fuel.",
-      "delay_seconds": 15
+      "delay_seconds": 15,
+      "tests": [
+        {
+          "check": "entity_exists",
+          "name": "rocket-silo",
+          "min_count": 1
+        }
+      ],
+      "max_retries": 3
     },
     {
       "id": "rocket-fuel",
@@ -164,9 +308,19 @@
     {
       "id": "launch",
       "prompt": "DEEP BORE DIRECTIVE: LAUNCH AUTHORIZATION. Inspect rocket silo status. If rocket is complete, authorize launch. If components are missing, identify and supply them. Upon successful launch: file finding. Doug has reached space. This finding has been reviewed. Doug finds no issue.",
-      "delay_seconds": 5
+      "delay_seconds": 5,
+      "tests": [
+        {
+          "check": "rcon_check",
+          "lua": "rcon.print(tostring(game.forces.player.rockets_launched > 0))"
+        }
+      ],
+      "max_retries": 3
     }
   ],
   "loop": false,
-  "current_index": 6
+  "current_index": 3,
+  "retry_counts": {
+    "craft-mining-drills": 1
+  }
 }

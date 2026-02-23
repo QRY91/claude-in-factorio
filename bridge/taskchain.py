@@ -14,6 +14,7 @@ class TaskChain:
         self.chain: list[dict] = data.get("chain", [])
         self.loop: bool = data.get("loop", False)
         self.current_index: int = data.get("current_index", 0)
+        self.retry_counts: dict[str, int] = data.get("retry_counts", {})
         self._filepath = filepath
 
     @property
@@ -25,6 +26,16 @@ class TaskChain:
     @property
     def is_complete(self) -> bool:
         return self.current_index >= len(self.chain)
+
+    def get_retry_count(self, task_id: str) -> int:
+        return self.retry_counts.get(task_id, 0)
+
+    def increment_retry(self, task_id: str) -> int:
+        """Bump retry count for a task. Returns new count, persists to disk."""
+        count = self.retry_counts.get(task_id, 0) + 1
+        self.retry_counts[task_id] = count
+        self._save()
+        return count
 
     def advance(self) -> dict | None:
         """Move to next task. Returns the new current task, or None if done."""
@@ -43,6 +54,7 @@ class TaskChain:
         try:
             data = json.loads(self._filepath.read_text())
             data["current_index"] = self.current_index
+            data["retry_counts"] = self.retry_counts
             self._filepath.write_text(json.dumps(data, indent=2) + "\n")
         except OSError:
             pass

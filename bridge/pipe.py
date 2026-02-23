@@ -108,7 +108,8 @@ from transport import (InputWatcher, send_response, send_tool_status, set_status
                        pre_place_character, setup_surfaces, set_spectator_mode)
 from paths import find_mod_source, find_mods_dir
 from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, Telemetry, emit_chat, emit_tool_call, emit_error, emit_status, emit_chain_event
-from taskchain import load_all_task_chains, TaskChain
+from taskchain import load_all_task_chains, load_task_chain, TaskChain
+from verify import run_checks
 
 _BRIDGE_DIR = Path(__file__).resolve().parent
 SESSIONS_FILE = _BRIDGE_DIR / ".sessions.json"
@@ -657,17 +658,54 @@ class AgentThread:
                 print(f"  [{_ts()}] Chain: task failed, NOT advancing (will retry on restart)")
 
     def _maybe_chain_next(self, completed_msg: dict):
-        """If this was a chain task, emit completion and dispatch the next one."""
+        """If this was a chain task, verify then advance or retry."""
         if not self.task_chain or not completed_msg.get("_chain_task_id"):
             return
 
         current = self.task_chain.current_task
-        if current:
-            emit_chain_event(self.telemetry, "task_complete", {
+        if not current:
+            return
+
+        # ── Verification ──
+        tests = current.get("tests", [])
+        if tests:
+            print(f"  [{_ts()}] Verifying task '{current['id']}'...")
+            vr = run_checks(self.rcon, self.agent_name, tests)
+            print(f"  [{_ts()}] Verify: {vr.summary()}")
+            emit_chain_event(self.telemetry, "task_verified", {
                 "task_id": current["id"],
-                "chain_index": self.task_chain.current_index,
-                "chain_length": len(self.task_chain.chain),
+                "passed": vr.passed,
+                "summary": vr.summary(),
             }, agent=self.telemetry_name)
+
+            if not vr.passed:
+                max_retries = current.get("max_retries", 2)
+                retries = self.task_chain.increment_retry(current["id"])
+                if retries <= max_retries:
+                    print(f"  [{_ts()}] Verify FAILED — retry {retries}/{max_retries}")
+                    retry_prompt = vr.failure_prompt() + "\n\n" + current["prompt"]
+                    self.enqueue({
+                        "message": retry_prompt,
+                        "player_index": 0,
+                        "player_name": "chain",
+                        "target_agent": self.agent_name,
+                        "_chain_task_id": current["id"],
+                    })
+                    return
+                else:
+                    print(f"  [{_ts()}] Verify FAILED — max retries exhausted, skipping '{current['id']}'")
+                    emit_chain_event(self.telemetry, "task_skipped", {
+                        "task_id": current["id"],
+                        "reason": f"max retries ({max_retries}) exhausted",
+                        "summary": vr.summary(),
+                    }, agent=self.telemetry_name)
+
+        # ── Task passed (or no tests) — advance ──
+        emit_chain_event(self.telemetry, "task_complete", {
+            "task_id": current["id"],
+            "chain_index": self.task_chain.current_index,
+            "chain_length": len(self.task_chain.chain),
+        }, agent=self.telemetry_name)
 
         next_task = self.task_chain.advance()
         if next_task is None:
@@ -998,7 +1036,6 @@ def main():
     watcher = InputWatcher(input_file)
 
     # Load task chain for this agent
-    from taskchain import load_task_chain
     task_chain = load_task_chain(agent_name)
     pending_chain_msgs: list[dict] = []
     if task_chain:
@@ -1060,15 +1097,51 @@ def main():
                 session_id = new_session
                 save_session(agent_name, session_id)
 
-                # Auto-chain: dispatch next task if this was a chain task
+                # Auto-chain: verify then advance if this was a chain task
                 if task_chain and msg.get("_chain_task_id"):
                     current = task_chain.current_task
                     if current:
+                        # ── Verification ──
+                        tests = current.get("tests", [])
+                        if tests:
+                            print(f"  [{_ts()}] Verifying task '{current['id']}'...")
+                            vr = run_checks(rcon, agent_name, tests)
+                            print(f"  [{_ts()}] Verify: {vr.summary()}")
+                            emit_chain_event(telemetry, "task_verified", {
+                                "task_id": current["id"],
+                                "passed": vr.passed,
+                                "summary": vr.summary(),
+                            }, agent=telemetry_name)
+
+                            if not vr.passed:
+                                max_retries = current.get("max_retries", 2)
+                                retries = task_chain.increment_retry(current["id"])
+                                if retries <= max_retries:
+                                    print(f"  [{_ts()}] Verify FAILED — retry {retries}/{max_retries}")
+                                    retry_prompt = vr.failure_prompt() + "\n\n" + current["prompt"]
+                                    pending_chain_msgs.append({
+                                        "message": retry_prompt,
+                                        "player_index": 0,
+                                        "player_name": "chain",
+                                        "target_agent": agent_name,
+                                        "_chain_task_id": current["id"],
+                                    })
+                                    continue
+                                else:
+                                    print(f"  [{_ts()}] Verify FAILED — max retries exhausted, skipping '{current['id']}'")
+                                    emit_chain_event(telemetry, "task_skipped", {
+                                        "task_id": current["id"],
+                                        "reason": f"max retries ({max_retries}) exhausted",
+                                        "summary": vr.summary(),
+                                    }, agent=telemetry_name)
+
+                        # ── Task passed (or no tests) — advance ──
                         emit_chain_event(telemetry, "task_complete", {
                             "task_id": current["id"],
                             "chain_index": task_chain.current_index,
                             "chain_length": len(task_chain.chain),
                         }, agent=telemetry_name)
+
                     next_task = task_chain.advance()
                     if next_task is None:
                         print(f"  [{_ts()}] Chain complete for {agent_name}")
