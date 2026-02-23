@@ -16,6 +16,7 @@ import json
 import os
 import queue
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,29 @@ if _env_file.exists():
             _key, _val = _key.strip(), _val.strip()
             if _val and _key not in os.environ:
                 os.environ[_key] = _val
+
+# ── Subprocess tracking (for clean Ctrl+C shutdown) ───────────
+_active_procs: list[subprocess.Popen] = []
+_active_procs_lock = threading.Lock()
+
+
+def _kill_all_subprocesses():
+    """Kill all tracked claude subprocesses."""
+    with _active_procs_lock:
+        for proc in _active_procs:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        _active_procs.clear()
+
+
+def _shutdown_handler(signum, frame):
+    """Handle SIGINT/SIGTERM: kill subprocesses and exit."""
+    _kill_all_subprocesses()
+    print("\nShutting down...")
+    sys.exit(130 if signum == signal.SIGINT else 143)
+
 
 # ── Run logging ───────────────────────────────────────────────
 
@@ -336,6 +360,8 @@ def handle_message(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=env, text=True,
         )
+        with _active_procs_lock:
+            _active_procs.append(proc)
     except FileNotFoundError:
         print("[Error] 'claude' CLI not found. Install: npm install -g @anthropic-ai/claude-code")
         send_response(rcon, player_index, rcon_target, "Error: claude CLI not installed")
@@ -419,6 +445,9 @@ def handle_message(
                     })
 
     proc.wait()
+    with _active_procs_lock:
+        if proc in _active_procs:
+            _active_procs.remove(proc)
 
     if proc.returncode != 0:
         stderr = proc.stderr.read()
@@ -671,9 +700,10 @@ def main_multi(args, agent_profiles: list[dict]):
                     agents[target].enqueue(msg)
                 else:
                     print(f"[warn] Message for unknown agent '{target}', dropping")
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         print("\nShutting down...")
     finally:
+        _kill_all_subprocesses()
         rcon.close()
         print("Done.")
 
@@ -748,6 +778,10 @@ def main():
     log_path = setup_logging(log_dir)
     if log_path:
         print(f"Logging to {log_path}")
+
+    # Install signal handlers for clean Ctrl+C shutdown
+    signal.signal(signal.SIGINT, _shutdown_handler)
+    signal.signal(signal.SIGTERM, _shutdown_handler)
 
     # Multi-agent mode
     if args.group or args.agents:
@@ -854,9 +888,10 @@ def main():
                     session_id = new_session
                     save_session(agent_name, session_id)
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         print("\nShutting down...")
     finally:
+        _kill_all_subprocesses()
         rcon.close()
         print("Done.")
 

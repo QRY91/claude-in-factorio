@@ -251,6 +251,8 @@ claude-in-factorio/
 
 **"Mod mismatch" when connecting** — Server and client must have the same mod version. Re-copy the mod and run `./start-server.sh --fresh`.
 
+**Multiplayer desync** — Agent walking and entity modifications are routed through the mod's `on_tick` handler for deterministic multiplayer. If you see desync, make sure both server and client have the same mod version (0.7.0+) and factorioctl binary.
+
 **pipe.py can't find script-output** — Auto-detected from `.factorio-server-data/`. Set `FACTORIO_SERVER_DATA` env var to override.
 
 **Steam/Flatpak: mod not loading** — Flatpak can't follow symlinks. Always **copy**, don't symlink.

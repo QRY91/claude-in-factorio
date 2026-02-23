@@ -12,6 +12,7 @@
 #   ./run.sh sync             # sync mod only
 
 set -e
+trap 'echo ""; echo "Interrupted."; exit 130' INT TERM
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 CMD="${1:-bridge}"

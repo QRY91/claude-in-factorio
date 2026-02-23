@@ -17,6 +17,9 @@ local function init_storage()
     storage.active_agent = storage.active_agent or {}
     storage._rcon_queue = storage._rcon_queue or {}
     storage.spectator_mode = storage.spectator_mode or false
+    -- Agent character entities and walk targets (for deterministic on_tick processing)
+    storage.characters = storage.characters or {}
+    storage.walk_state = storage.walk_state or {}
 end
 
 -- Ensure per-agent message tables exist for a player
@@ -445,6 +448,26 @@ end
 -- Queue Processing (on_tick)
 -- ============================================================
 
+-- Apply walk states to agent characters each tick.
+-- Processed in on_tick for deterministic multiplayer behavior.
+local function process_walk_states()
+    if not storage.walk_state then return end
+    local to_remove = {}
+    for agent_id, ws in pairs(storage.walk_state) do
+        local c = storage.characters[agent_id]
+        if c and c.valid then
+            c.walking_state = ws
+        end
+        -- Clean up stopped entries (applied once, then removed)
+        if not ws.walking then
+            table.insert(to_remove, agent_id)
+        end
+    end
+    for _, agent_id in ipairs(to_remove) do
+        storage.walk_state[agent_id] = nil
+    end
+end
+
 -- Process queued RCON commands deterministically in on_tick.
 -- This prevents desync in multiplayer: RCON pushes to queue,
 -- on_tick processes it identically on server and all clients.
@@ -547,6 +570,34 @@ remote.add_interface("claude_interface", {
         })
     end,
 
+    -- Register an agent character entity for on_tick walk processing
+    register_character = function(agent_id, entity)
+        if not storage.characters then storage.characters = {} end
+        storage.characters[agent_id] = entity
+    end,
+
+    -- Set walking direction for an agent (processed in on_tick)
+    set_walk = function(agent_id, direction)
+        if not storage.walk_state then storage.walk_state = {} end
+        storage.walk_state[agent_id] = {walking = true, direction = direction}
+    end,
+
+    -- Stop walking for an agent (processed in on_tick)
+    stop_walk = function(agent_id)
+        if not storage.walk_state then storage.walk_state = {} end
+        storage.walk_state[agent_id] = {walking = false}
+    end,
+
+    -- Get character position (read-only, safe from any context)
+    get_character_pos = function(agent_id)
+        if not storage.characters then return nil end
+        local c = storage.characters[agent_id]
+        if c and c.valid then
+            return c.position.x .. "," .. c.position.y
+        end
+        return nil
+    end,
+
     set_spectator_mode = function(enabled)
         storage.spectator_mode = enabled
         -- Apply to all currently connected players
@@ -570,8 +621,11 @@ remote.add_interface("claude_interface", {
 
 script.on_init(init_storage)
 
--- Process RCON queue every tick (only does work when queue is non-empty)
-script.on_event(defines.events.on_tick, process_rcon_queue)
+-- Process RCON queue and walk states every tick
+script.on_event(defines.events.on_tick, function(event)
+    process_rcon_queue()
+    process_walk_states()
+end)
 
 script.on_configuration_changed(function(data)
     -- Migrate old flat messages to per-agent structure
