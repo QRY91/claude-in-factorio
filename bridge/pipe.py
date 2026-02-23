@@ -350,13 +350,15 @@ def build_claude_cmd(
         "--system-prompt", system_prompt,
         "--max-turns", str(max_turns),
     ]
-    if sandbox:
-        cmd.extend(["--disallowedTools", ",".join(AGENT_DISALLOWED_TOOLS)])
     if model:
         cmd.extend(["--model", model])
     if session_id:
         cmd.extend(["--resume", session_id])
+    # Prompt MUST come before --disallowedTools because the latter is variadic
+    # (<tools...>) and would consume the prompt as a tool name
     cmd.append(prompt)
+    if sandbox:
+        cmd.extend(["--disallowedTools", ",".join(AGENT_DISALLOWED_TOOLS)])
     return cmd
 
 
@@ -501,7 +503,7 @@ def handle_message(
             if player_index > 0:
                 send_response(rcon, player_index, rcon_target, error_msg)
                 set_status(rcon, player_index, "[color=0.4,0.8,0.4]Ready[/color]")
-            return new_session_id
+            return None  # Signal failure — chain should NOT advance
 
     # Send response — join all text parts so intermediate messages aren't lost
     reply = "\n\n".join(text_parts) if text_parts else "(action complete)"
@@ -650,8 +652,9 @@ class AgentThread:
             if new_session:
                 self.session_id = new_session
                 save_session(self.agent_name, self.session_id)
-
-            self._maybe_chain_next(msg)
+                self._maybe_chain_next(msg)
+            elif msg.get("_chain_task_id"):
+                print(f"  [{_ts()}] Chain: task failed, NOT advancing (will retry on restart)")
 
     def _maybe_chain_next(self, completed_msg: dict):
         """If this was a chain task, emit completion and dispatch the next one."""
@@ -1050,9 +1053,12 @@ def main():
                     model=model, max_turns=max_turns,
                     sandbox=sandbox,
                 )
-                if new_session:
-                    session_id = new_session
-                    save_session(agent_name, session_id)
+                if not new_session:
+                    if msg.get("_chain_task_id"):
+                        print(f"  [{_ts()}] Chain: task failed, NOT advancing (will retry on restart)")
+                    continue
+                session_id = new_session
+                save_session(agent_name, session_id)
 
                 # Auto-chain: dispatch next task if this was a chain task
                 if task_chain and msg.get("_chain_task_id"):
