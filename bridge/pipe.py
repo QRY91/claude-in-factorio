@@ -318,9 +318,23 @@ def write_mcp_config(
                     "FACTORIO_RCON_PASSWORD": rcon_password,
                     "FACTORIO_AGENT_ID": agent_id,
                 },
-            }
+            },
+            "uroboro": {
+                "type": "stdio",
+                "command": "/home/qry/projects/uroboro/uroboro",
+                "args": ["mcp"],
+            },
         }
     }
+    # Add intent-gate MCP if binary exists and config is set
+    intent_gate_bin = "/home/qry/projects/intent-gating/target/release/intent-gate"
+    intent_gate_config = os.environ.get("INTENT_GATE_CONFIG", "")
+    if os.path.isfile(intent_gate_bin) and intent_gate_config:
+        config["mcpServers"]["intent-gate"] = {
+            "type": "stdio",
+            "command": intent_gate_bin,
+            "args": ["mcp", "--config", intent_gate_config],
+        }
     config_path = _BRIDGE_DIR / f".mcp-config-{agent_id}.json"
     config_path.write_text(json.dumps(config))
     return config_path
@@ -390,12 +404,14 @@ def handle_message(
     model: str | None = None,
     max_turns: int = 15,
     sandbox: bool = True,
+    signals: dict | None = None,
 ) -> str | None:
     """Pipe a message through claude CLI. Returns new session_id.
     agent_name: registered agent name (for RCON/mod).
     telemetry_name: display name for telemetry/logs (defaults to agent_name).
     response_to: if set, send response to this tab instead of agent_name (group chat).
-    sandbox: if True, block filesystem/shell tools (Bash, Edit, Read, etc.)."""
+    sandbox: if True, block filesystem/shell tools (Bash, Edit, Read, etc.).
+    signals: optional dict populated with response signals (shutdown, dispatched)."""
     tname = telemetry_name or agent_name
     rcon_target = response_to or agent_name
     cmd = build_claude_cmd(prompt, mcp_config, system_prompt, session_id, model, max_turns, sandbox=sandbox)
@@ -453,6 +469,9 @@ def handle_message(
                     if len(input_summary) > 80:
                         input_summary = input_summary[:77] + "..."
                     print(f"  [{_ts()}] tool: {display}({input_summary})")
+                    # Track signals for heartbeat controller
+                    if signals is not None and display == "send_agent_message":
+                        signals["dispatched"] = True
                     # Only emit select tools to telemetry (broadcast_thought = agent narration)
                     if display == "broadcast_thought":
                         thought = tool_input.get("message", "")
@@ -517,6 +536,10 @@ def handle_message(
     # Send response — join all text parts so intermediate messages aren't lost
     reply = "\n\n".join(text_parts) if text_parts else "(action complete)"
     reply = sanitize_response(reply)
+
+    # Check for supervisor shutdown signal in response text
+    if signals is not None and "HEARTBEAT:STOP" in reply:
+        signals["shutdown"] = True
 
     print(f"[{tname}] {reply}\n")
     sections = parse_response(reply)
@@ -612,6 +635,7 @@ class AgentThread:
         self.sandbox = sandbox
         self.session_id = load_session(self.agent_name)
         self.task_chain: TaskChain | None = None
+        self.heartbeat: HeartbeatController | None = None
         self.inbox: queue.Queue = queue.Queue()
         self._thread = threading.Thread(
             target=self._run, name=f"agent-{self.agent_name}", daemon=True,
@@ -657,12 +681,19 @@ class AgentThread:
                                   "Error: factorioctl MCP not found")
                 return
 
+            # Session rotation: clear session to force fresh claude invocation
+            if msg.get("_rotate_session"):
+                print(f"  [{_ts()}] Session rotation: clearing session for {self.agent_name}")
+                self.session_id = None
+
+            # Track signals for heartbeat lifecycle (supervisor only)
+            sigs = {} if self.heartbeat else None
             new_session = handle_message(
                 message, self.mcp_config, self.system_prompt, self.session_id,
                 self.rcon, player_index, self.telemetry,
                 agent_name=self.agent_name, telemetry_name=self.telemetry_name,
                 response_to=response_to, model=self.model, max_turns=self.max_turns,
-                sandbox=self.sandbox,
+                sandbox=self.sandbox, signals=sigs,
             )
             if new_session:
                 self.session_id = new_session
@@ -670,6 +701,16 @@ class AgentThread:
                 self._maybe_chain_next(msg)
             elif msg.get("_chain_task_id"):
                 print(f"  [{_ts()}] Chain: task failed, NOT advancing (will retry on restart)")
+
+            # Process heartbeat signals
+            if sigs and self.heartbeat:
+                if sigs.get("shutdown"):
+                    self.heartbeat.stop("supervisor self-kill (HEARTBEAT:STOP)")
+                elif sigs.get("dispatched"):
+                    self.heartbeat.record_activity()
+                elif player_name == "heartbeat":
+                    # Heartbeat wakeup with no dispatch = idle
+                    self.heartbeat.record_idle()
 
     def _maybe_chain_next(self, completed_msg: dict):
         """If this was a chain task, verify then advance or retry."""
@@ -754,28 +795,94 @@ class AgentThread:
         })
 
 
-def _start_supervisor_heartbeat(supervisor: 'AgentThread', interval: float):
-    """Periodically wake the supervisor to check on workers and decide next actions."""
-    def _loop():
+class HeartbeatController:
+    """Controls the supervisor heartbeat lifecycle with multiple stop conditions."""
+
+    def __init__(self, supervisor: 'AgentThread', interval: float,
+                 max_heartbeats: int | None = None,
+                 max_idle: int | None = None,
+                 rotation_interval: int = 5):
+        self.supervisor = supervisor
+        self.interval = interval
+        self.max_heartbeats = max_heartbeats
+        self.max_idle = max_idle
+        self.rotation_interval = rotation_interval
+        self._stop = threading.Event()
+        self._count = 0
+        self._idle_count = 0
+        self._thread: threading.Thread | None = None
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
+
+    def start(self):
+        self._thread = threading.Thread(
+            target=self._loop, name="supervisor-heartbeat", daemon=True,
+        )
+        self._thread.start()
+        limits = []
+        if self.max_heartbeats:
+            limits.append(f"max={self.max_heartbeats}")
+        if self.max_idle:
+            limits.append(f"idle={self.max_idle}")
+        limits.append(f"rotate={self.rotation_interval}")
+        limit_str = f" ({', '.join(limits)})" if limits else ""
+        print(f"  [{_ts()}] Supervisor heartbeat: every {self.interval}s{limit_str}")
+
+    def stop(self, reason: str = "manual"):
+        """Stop the heartbeat loop."""
+        if not self._stop.is_set():
+            self._stop.set()
+            print(f"  [{_ts()}] Heartbeat stopped: {reason} (after {self._count} beats)")
+
+    def record_activity(self):
+        """Reset idle counter — supervisor dispatched a task."""
+        self._idle_count = 0
+
+    def record_idle(self):
+        """Supervisor did nothing meaningful this heartbeat."""
+        self._idle_count += 1
+        if self.max_idle and self._idle_count >= self.max_idle:
+            self.stop(f"idle for {self._idle_count} consecutive heartbeats")
+
+    def _loop(self):
         time.sleep(10)  # let workers start up
-        supervisor.enqueue({
-            "message": "Begin operations. Survey available workers via list_agents, observe current game state, and dispatch the first task.",
+        self.supervisor.enqueue({
+            "message": "Begin operations. Observe current game state (get_inventory, render_map, find_nearest_resource), then start executing.",
             "player_index": 0,
             "player_name": "system",
-            "target_agent": supervisor.agent_name,
+            "target_agent": self.supervisor.agent_name,
         })
-        while True:
-            supervisor.inbox.join()  # wait for current work to finish
-            time.sleep(interval)
-            supervisor.enqueue({
-                "message": "Heartbeat: check worker progress via get_agent_activity, verify game state, decide next actions.",
+        while not self._stop.is_set():
+            self.supervisor.inbox.join()  # wait for current work to finish
+            if self._stop.wait(self.interval):  # interruptible sleep
+                break
+            self._count += 1
+            if self.max_heartbeats and self._count >= self.max_heartbeats:
+                self.stop(f"reached max ({self.max_heartbeats})")
+                break
+            rotate = (self.rotation_interval > 0
+                      and self._count % self.rotation_interval == 0)
+            if rotate:
+                hb_message = (
+                    f"Heartbeat #{self._count} (fresh session): "
+                    "Call uro_recap first to load prior context, "
+                    "then check game state and continue operations."
+                )
+            else:
+                hb_message = (
+                    f"Heartbeat #{self._count}: "
+                    "check game state, decide next actions."
+                )
+            self.supervisor.enqueue({
+                "message": hb_message,
                 "player_index": 0,
                 "player_name": "heartbeat",
-                "target_agent": supervisor.agent_name,
+                "target_agent": self.supervisor.agent_name,
+                "_rotate_session": rotate,
             })
-    t = threading.Thread(target=_loop, name="supervisor-heartbeat", daemon=True)
-    t.start()
-    print(f"  [{_ts()}] Supervisor heartbeat: every {interval}s")
+        print(f"  [{_ts()}] Supervisor heartbeat thread exiting")
 
 
 def main_multi(args, agent_profiles: list[dict]):
@@ -842,7 +949,11 @@ def main_multi(args, agent_profiles: list[dict]):
                 mcp_bin, args.rcon_host, args.rcon_port,
                 args.rcon_password, agent_id=agent["name"],
             )
-        agent_sandbox = agent.get("sandbox", sandbox)  # per-agent override
+        if "sandbox" not in agent:
+            print(f"FATAL: Agent config '{agent['name']}' missing required 'sandbox' field.")
+            print(f"  Add '\"sandbox\": true' to {agent['name']}.json (or false if you know what you're doing).")
+            sys.exit(1)
+        agent_sandbox = agent["sandbox"] if not args.no_sandbox else False
         at = AgentThread(agent, mcp_config, rcon, telemetry, args.model, sandbox=agent_sandbox)
         agents[agent["name"]] = at
 
@@ -876,11 +987,19 @@ def main_multi(args, agent_profiles: list[dict]):
     # Load and dispatch task chains (skipped when supervisor is present)
     if has_supervisor:
         print(f"  [{_ts()}] Supervisor active — static task chains disabled")
-        # Start supervisor heartbeat
+        # Start supervisor heartbeat with lifecycle controls
         for name, at in agents.items():
             if at.agent.get("role") == "supervisor":
                 interval = at.agent.get("heartbeat_seconds", 90)
-                _start_supervisor_heartbeat(at, interval)
+                max_hb = at.agent.get("max_heartbeats")
+                max_idle = at.agent.get("max_idle_heartbeats")
+                rotation = at.agent.get("session_rotation_heartbeats", 5)
+                hb = HeartbeatController(at, interval,
+                                         max_heartbeats=max_hb,
+                                         max_idle=max_idle,
+                                         rotation_interval=rotation)
+                at.heartbeat = hb
+                hb.start()
     else:
         chains = load_all_task_chains()
         for agent_name, chain in chains.items():
@@ -916,7 +1035,33 @@ def main_multi(args, agent_profiles: list[dict]):
                         if i < len(fan_targets) - 1:
                             time.sleep(1)  # stagger to avoid RCON flood
                 elif target in agents:
-                    agents[target].enqueue(msg)
+                    # Operator commands for supervisor heartbeat
+                    at = agents[target]
+                    message_text = msg.get("message", "").strip().lower()
+                    if at.heartbeat and message_text in ("/stop", "stop", "shutdown"):
+                        at.heartbeat.stop(f"operator command from {msg.get('player_name', '?')}")
+                        player_idx = msg.get("player_index", 0)
+                        if player_idx > 0:
+                            send_response(rcon, player_idx, target,
+                                          "[color=1,0.6,0.2]Heartbeat stopped.[/color]")
+                    elif at.heartbeat and message_text in ("/resume", "resume"):
+                        if at.heartbeat.stopped:
+                            interval = at.agent.get("heartbeat_seconds", 90)
+                            max_hb = at.agent.get("max_heartbeats")
+                            max_idle = at.agent.get("max_idle_heartbeats")
+                            hb = HeartbeatController(at, interval,
+                                                     max_heartbeats=max_hb,
+                                                     max_idle=max_idle)
+                            at.heartbeat = hb
+                            hb.start()
+                            player_idx = msg.get("player_index", 0)
+                            if player_idx > 0:
+                                send_response(rcon, player_idx, target,
+                                              "[color=0.4,0.8,0.4]Heartbeat resumed.[/color]")
+                        else:
+                            at.enqueue(msg)
+                    else:
+                        at.enqueue(msg)
                 else:
                     print(f"[warn] Message for unknown agent '{target}', dropping")
     except (KeyboardInterrupt, SystemExit):
