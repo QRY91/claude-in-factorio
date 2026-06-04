@@ -6,6 +6,7 @@
   "role": "supervisor",
   "max_turns": 50,
   "heartbeat_seconds": 90,
+  "max_heartbeats": 20,
   "max_idle_heartbeats": 5,
   "session_rotation_heartbeats": 5,
   "sandbox": true,

@@ -9,7 +9,7 @@
   "model": "sonnet",
   "max_turns": 200,
   "heartbeat_seconds": 90,
-  "max_heartbeats": null,
+  "max_heartbeats": 20,
   "max_idle_heartbeats": 5,
   "response_format": {
     "header_label": "STATUS",
