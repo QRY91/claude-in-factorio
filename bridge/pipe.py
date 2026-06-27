@@ -115,7 +115,7 @@ from transport import (InputWatcher, send_response, send_tool_status, set_status
                        check_mod_loaded, register_agent, unregister_agent,
                        pre_place_character, setup_surfaces, set_spectator_mode)
 from paths import find_mod_source, find_mods_dir
-from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, Telemetry, emit_chat, emit_tool_call, emit_error, emit_status, emit_chain_event
+from telemetry import SSEBroadcaster, start_sse_server, RelayPusher, FileSink, Telemetry, emit_chat, emit_tool_call, emit_error, emit_status, emit_chain_event
 from taskchain import load_all_task_chains, load_task_chain, TaskChain
 from verify import run_checks
 
@@ -477,6 +477,12 @@ def handle_message(
                         thought = tool_input.get("message", "")
                         if thought:
                             emit_chat(telemetry, "agent", thought, agent=tname)
+                    # Emit every factorioctl GAME action (craft/place/walk/mine/...) so the event log is a
+                    # complete record of the work — that's what the on-disk FileSink banks into Mica
+                    # candidates (nauvis-dispatch.py) and what a live spectator sees. Meta-tools
+                    # (ToolSearch, uro_*) are intentionally skipped as noise.
+                    elif tool_name.startswith("mcp__factorioctl__"):
+                        emit_tool_call(telemetry, display, tool_input, agent=tname)
                     # Send tool status to agent's own tab (not to group chat "all" tab)
                     # Skip for injected messages (player_index=0) — no GUI to update
                     if player_index > 0 and (not tool_name.startswith("mcp__") or tool_name.startswith("mcp__factorioctl__")):
@@ -577,8 +583,15 @@ def build_telemetry(args) -> Telemetry | None:
             relay_pusher = RelayPusher(relay_url, token)
             print(f"  Relay:       {relay_url}")
 
-    if sse_broadcaster or relay_pusher:
-        return Telemetry(sse=sse_broadcaster, relay=relay_pusher)
+    # On-disk event log (the durable record nauvis-dispatch.py banks from). Off unless a path is set,
+    # so it's opt-in for runs you want to turn into Mica candidates. Independent of the relay.
+    event_log = args.event_log or os.environ.get("FACTORIO_EVENTLOG_PATH", "")
+    file_sink = FileSink(event_log) if event_log else None
+    if file_sink:
+        print(f"  Event log:   {event_log}")
+
+    if sse_broadcaster or relay_pusher or file_sink:
+        return Telemetry(sse=sse_broadcaster, relay=relay_pusher, sink=file_sink)
     return None
 
 
@@ -1122,6 +1135,9 @@ def main():
     parser.add_argument("--sse-port", type=int, default=8088)
     parser.add_argument("--relay", default=None)
     parser.add_argument("--relay-token", default=None)
+    parser.add_argument("--event-log", default=None,
+                        help="Append all telemetry events to this JSONL (the record nauvis-dispatch.py banks). "
+                             "Also settable via FACTORIO_EVENTLOG_PATH.")
     parser.add_argument("--setup-surfaces", action="store_true",
                         help="Create planet surfaces before placing agents (for fresh worlds)")
     parser.add_argument("--stagger-delay", type=float, default=3.0,

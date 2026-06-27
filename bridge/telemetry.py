@@ -1,6 +1,7 @@
-"""Telemetry bus: local SSE server and remote relay pusher."""
+"""Telemetry bus: local SSE server, remote relay pusher, and an on-disk event log."""
 
 import json
+import os
 import queue
 import threading
 from datetime import datetime, timezone
@@ -149,12 +150,34 @@ class RelayPusher:
                 print(f"[relay] push failed: {e}")
 
 
-class Telemetry:
-    """Unified event bus — broadcasts to local SSE clients and/or remote relay."""
+class FileSink:
+    """Appends every emitted event as one JSON line to a run-scoped file — the local, durable record a
+    dispatch adapter (nauvis-dispatch.py) reads to bank Mica candidates. The SSE/relay are ephemeral
+    (a live spectator); this is the on-disk event log, analogous to the Stardew agent's ticklog. Off
+    unless a path is configured; thread-safe because agents emit from multiple threads."""
 
-    def __init__(self, sse: SSEBroadcaster | None = None, relay: RelayPusher | None = None):
+    def __init__(self, path: str):
+        self.path = path
+        self._lock = threading.Lock()
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+    def write(self, event: dict):
+        line = json.dumps(event, separators=(",", ":"))
+        with self._lock:
+            with open(self.path, "a") as f:
+                f.write(line + "\n")
+
+
+class Telemetry:
+    """Unified event bus — broadcasts to local SSE clients, a remote relay, and/or an on-disk log."""
+
+    def __init__(self, sse: SSEBroadcaster | None = None, relay: RelayPusher | None = None,
+                 sink: "FileSink | None" = None):
         self.sse = sse
         self.relay = relay
+        self.sink = sink
 
     def emit(self, event: dict):
         if "timestamp" not in event:
@@ -163,6 +186,8 @@ class Telemetry:
             self.sse.broadcast(dict(event))
         if self.relay:
             self.relay.push(dict(event))
+        if self.sink:
+            self.sink.write(dict(event))
 
 
 # Telemetry helpers — all safe to call with telemetry=None

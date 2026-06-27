@@ -18,6 +18,11 @@ bridge/.mcp-config*.json
 bridge/.sessions.json
 bridge/.session-*.json
 
+# Per-run telemetry event logs (the durable record nauvis-dispatch.py banks from) + agent memory
+runs/
+.agent_memory.json
+bridge/.task-state-*.json
+
 # Binary integrity hash (runtime)
 bridge/.factorioctl-hash
 
