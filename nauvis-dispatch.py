@@ -244,6 +244,54 @@ def build_log_events(records: list) -> list:
     return events
 
 
+# ── digest mode — ONE neutral fact digest; Mica's canon + Doug dossier do the framing ──────────────
+# 'building in the wilds' is on-canon (one of Doug's lives), so the digest keeps the SHAPE of the run —
+# he built something huge by hand, from scratch — but drops ALL framing AND every game artifact the
+# angle builder leans on: no entity/recipe names, no raw counts, no directive/step names, no verbatim
+# narration (his own words carry the machinery — the tool names, ore types — so they stay OUT of a
+# neutral digest; we note only the HABIT of narrating, which is on-canon). gen frames it from her canon.
+
+def build_digest(mem, records) -> str:
+    """One neutral, humanized account of Doug's run out in the wilds — plain facts only, no machinery.
+    Reads the event log (the legacy task-state has no life-facts worth a neutral digest, so mem is
+    ignored). gen.generate_digest frames it from Mica's canon + the Doug dossier."""
+    recs = [r for r in records if isinstance(r, dict)]
+    if not recs:
+        return ""
+    tools = [r for r in recs if r.get("type") == "tool_call"]
+    done = [t for t in ((r.get("data") or {}).get("task")
+                        for r in recs if r.get("type") == "task_complete") if t]
+    errors = [m for m in ((r.get("data") or {}).get("message", "")
+                          for r in recs if r.get("type") == "error") if m]
+    narrated = any(r.get("type") == "chat"
+                   and (r.get("data") or {}).get("role") in ("agent", "assistant", "doug")
+                   and (r.get("data") or {}).get("message") for r in recs)
+
+    made = placed = 0
+    for e in tools:
+        t, inp = _tool_of(e).lower(), _input_of(e)
+        if "craft" in t:
+            made += int(inp.get("count", 1) or 1)
+        elif any(k in t for k in ("place", "build", "construct")):
+            placed += 1
+
+    bits: list[str] = []
+    if made or placed:
+        bits.append("out in the wilds he spent the run building something enormous by hand — making "
+                    "part after part and setting machine after machine into the ground, all from raw "
+                    "material he dug up himself")
+    elif tools:
+        bits.append("out in the wilds he worked the whole run, digging up raw material and shaping it "
+                    "by hand")
+    if done:
+        bits.append("he ticked several milestones off a build that just keeps going")
+    if errors:
+        bits.append("the ground fought him more than once and each time he just adjusted and kept at it")
+    if narrated:
+        bits.append("and the whole time he talked himself through it, narrating every step like he always does")
+    return (". ".join(bits) + ".") if bits else ""
+
+
 def _summary(mem, records) -> str:
     """The 'directive so far' line for the CLI header (use whichever input we have)."""
     if mem is not None:
@@ -265,5 +313,5 @@ def _summary(mem, records) -> str:
 
 if __name__ == "__main__":
     D.run_cli(title="Nauvis → Mica", default_dir=DEFAULT_DIR, build_events=build_events,
-              build_log_events=build_log_events, summarize=_summary,
+              build_log_events=build_log_events, build_digest=build_digest, summarize=_summary,
               default_path=_DEFAULT_STATE if os.path.exists(_DEFAULT_STATE) else None)
