@@ -164,6 +164,20 @@ def load_agent(agent_name: str) -> dict:
         raise ValueError(f"Agent profile missing 'name': {agent_file}")
     if not isinstance(agent.get("system_prompt"), str) or not agent["system_prompt"]:
         raise ValueError(f"Agent profile missing 'system_prompt': {agent_file}")
+    # DOUG_PERSONA (env): prepend the canonical Doug CORE block (chasm-logic canon,
+    # characters/doug/doug-for-harness.md — FIRST fenced block only; the canon's agent-loop block is
+    # for the doug_agent family, not the claude -p supervisor). doug-* agents only; env-gated so an
+    # unset/unreadable path runs the profile exactly as authored.
+    if agent_name.startswith("doug"):
+        _p = os.environ.get("DOUG_PERSONA", "")
+        if _p:
+            try:
+                with open(os.path.expanduser(_p), encoding="utf-8") as _f:
+                    _m = re.search(r"```(?:\w+)?\n(.*?)```", _f.read(), re.S)
+                if _m:
+                    agent["system_prompt"] = _m.group(1).strip() + "\n\n" + agent["system_prompt"]
+            except OSError:
+                pass
     # Auto-generate formatting instructions from response_format
     fmt = agent.get("response_format")
     if fmt:

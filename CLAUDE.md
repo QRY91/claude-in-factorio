@@ -1,4 +1,16 @@
-# Claude-in-Factorio
+# Claude-in-Factorio — codename **Nauvis**
+
+Doug builds in the wilds of another planet — the original life, and the site of the real
+self-modification incident the show's bore reports fictionalize. One of the Chasm Logic
+agentic-gaming harnesses; it knows nothing about the show. Contract: `~/projects/mica/CONTRACT.md`.
+
+**Show status (2026-07-03):** stable, older; its own architecture (claude -p supervisor + MCP
+`factorioctl` over RCON + task chains — correctly bespoke, not a run_session refit target). Banks
+**by hand**: each run's `bank it:` convention → `bank.py nauvis-dispatch.py <artifact> nauvis …`
+(no agent-games profile, by design). Persona: `bridge/agents/doug-*.json` carry the Nauvis doctrine;
+the canonical Doug CORE prepends via env `DOUG_PERSONA` (`pipe.py load_agent`, doug-* agents only).
+Containment posture (execute_lua disabled, binary integrity, run caps): see
+`chasm-logic/notes/logs/code-review-2026-06.md`. Priorities: `chasm-logic/notes/harness/harness-roadmap.md`.
 
 ## Project Structure
 
