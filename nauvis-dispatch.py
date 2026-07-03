@@ -130,13 +130,7 @@ def _count_phrase(name: str, n: int) -> str:
     return f"{n} {h}{'' if h.endswith('s') else 's'}"
 
 
-def _oxford(items: list) -> str:
-    items = [i for i in items if i]
-    if not items:
-        return ""
-    if len(items) == 1:
-        return items[0]
-    return ", ".join(items[:-1]) + (" and " if len(items) == 2 else ", and ") + items[-1]
+_oxford = D.join  # kit helper (extracted into mica.dispatch 2026-07-03)
 
 
 _TOOL_PHRASE = [

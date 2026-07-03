@@ -8,8 +8,8 @@
   "properties": {
     "type": {
       "type": "string",
-      "enum": ["chat", "tool_call", "tool_result", "error", "status"],
-      "description": "Event category"
+      "enum": ["chat", "tool_call", "tool_result", "error", "status", "task_complete", "auto_chain", "chain_complete"],
+      "description": "Event category (task_complete/auto_chain/chain_complete are the task-chain lifecycle events pipe.py emits and nauvis-dispatch.py keys on — the schema had drifted behind the code)"
     },
     "agent": {
       "type": "string",
